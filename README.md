@@ -20,11 +20,13 @@ npm install
 ## Настройка
 
 1. Скопируйте `env.example` в `.env`:
+
    ```bash
    cp env.example .env
    ```
 
 2. Заполните API ключи Binance в файле `.env`:
+
    - `BINANCE_API_KEY` - ваш API ключ
    - `BINANCE_SECRET_KEY` - ваш секретный ключ
 
@@ -74,9 +76,11 @@ test/
 ## Компоненты
 
 ### WebSocket клиент
+
 Использует официальные WebSocket endpoints Binance Futures USDT-M:
 
 **Market Data Streams (публичные данные):**
+
 - Endpoint: `wss://fstream.binance.com/stream`
 - Документация: https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams
 - Потоки данных:
@@ -85,25 +89,32 @@ test/
   - `depth` - стакан заявок (`<symbol>@depth<levels>@<updateSpeed>`)
 
 **User Data Stream (приватные данные):**
+
 - Endpoint: `wss://fstream.binance.com/ws/<listenKey>`
 - Документация: https://developers.binance.com/docs/derivatives/usds-margined-futures/user-data-stream
 - Используется для получения обновлений о позициях и ордерах
 
 ### Strategy Engine
+
 Реализует стратегию Smart Money Concept:
+
 - **SMC анализ** - определение тренда на основе SMA и объема
 - **FVG (Fair Value Gap)** - обнаружение и использование ценовых разрывов
 - **Анализ ликвидности** - определение зон поддержки/сопротивления и пробитий
 
 ### Risk Manager
+
 Управление рисками:
+
 - Проверка максимального убытка за день
 - Расчет размера позиции на основе риска
 - Валидация стоп-лоссов и тейк-профитов
 - Отслеживание открытых позиций
 
 ### Order Executor
+
 Исполнение ордеров:
+
 - Поддержка market и limit ордеров
 - Dry-run режим для тестирования
 - Интеграция с Risk Manager
@@ -118,3 +129,10 @@ test/
 
 Логи сохраняются в файл, указанный в `LOG_FILE` (по умолчанию `logs/tradingbot.log`). Уровень логирования настраивается через `LOG_LEVEL` (debug, info, warn, error).
 
+# В другом терминале смотрите логи
+
+tail -f logs/tradingbot.log
+
+# Или ищите сигналы
+
+grep "SMC signal" logs/tradingbot.log

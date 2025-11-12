@@ -122,14 +122,17 @@ export class DataFeed extends EventEmitter {
 
   /**
    * Обработка агрегированных сделок
+   *
+   * AggTrade события приходят очень часто (несколько раз в секунду),
+   * поэтому не логируем их, чтобы не засорять консоль.
+   * Данные используются для анализа, но не требуют логирования.
    */
   private processAggTrade(data: AggTradeData): void {
-    // Можно использовать для анализа объема и импульса
-    this.logger.debug(
-      `AggTrade: ${data.price} x ${data.quantity} (${
-        data.isBuyerMaker ? "SELL" : "BUY"
-      })`
-    );
+    // Не логируем AggTrade - это нормальный поток рыночных данных
+    // Если нужно отслеживать крупные сделки, можно добавить фильтр:
+    // if (data.quantity >= 10.0) {
+    //   this.logger.info(`Large trade: ${data.quantity} BTC @ ${data.price}`);
+    // }
   }
 
   /**
