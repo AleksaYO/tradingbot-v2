@@ -20,6 +20,7 @@ import axios from "axios";
 import { Config } from "./Config";
 import { Logger } from "./Logger";
 import { RiskManager } from "./RiskManager";
+import { TimeSync } from "../utils/timeSync";
 
 export interface TradingSignal {
   side: "BUY" | "SELL";
@@ -47,10 +48,43 @@ export class OrderExecutor {
   private risk: RiskManager;
   private dryRunPositions: Map<string, DryRunPosition> = new Map();
   private positionCounter: number = 0;
+  private timeSync: TimeSync;
 
   constructor(logger: Logger, risk: RiskManager) {
     this.logger = logger;
     this.risk = risk;
+    this.timeSync = TimeSync.getInstance(logger);
+    
+    // Инициализируем синхронизацию времени при создании OrderExecutor
+    this.initializeTimeSync();
+  }
+
+  /**
+   * Инициализация синхронизации времени с Binance
+   */
+  private async initializeTimeSync(): Promise<void> {
+    try {
+      // startAutoSync() уже вызывает синхронизацию при старте, поэтому не нужно вызывать sync() отдельно
+      this.timeSync.startAutoSync(); // Автоматическая синхронизация каждый час (включает первую синхронизацию)
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Failed to initialize time sync: ${errorMessage}`);
+    }
+  }
+
+  /**
+   * Получение синхронизированного времени для запросов
+   */
+  private getTimestamp(): number {
+    // Проверяем, нужна ли повторная синхронизация
+    if (this.timeSync.needsResync()) {
+      // Асинхронно синхронизируем, но не ждем (не блокируем запрос)
+      this.timeSync.sync().catch(() => {
+        // Ошибка уже залогирована в TimeSync
+      });
+    }
+    
+    return this.timeSync.getSyncedTime();
   }
 
   /**
@@ -58,6 +92,15 @@ export class OrderExecutor {
    */
   private sign(query: string): string {
     return createHmac("sha256", Config.apiSecret).update(query).digest("hex");
+  }
+
+  /**
+   * Форматирование quantity для Binance API
+   * Убирает лишние нули и ограничивает точность
+   */
+  private formatQuantity(quantity: number): string {
+    // Убираем лишние нули, но сохраняем до 8 знаков после запятой
+    return quantity.toString().replace(/\.?0+$/, '');
   }
 
   /**
@@ -85,11 +128,13 @@ export class OrderExecutor {
     }
 
     this.logger.info(
-      `Executing ${signal.side} order: qty=${quantity}, positionSide=${positionSide}`
+      `🚀 Executing ${signal.side} order: qty=${quantity}, positionSide=${positionSide}`
     );
 
-    const timestamp = Date.now();
-    const params = `symbol=${Config.symbol}&side=${signal.side}&type=MARKET&quantity=${quantity}&positionSide=${positionSide}&timestamp=${timestamp}`;
+    const timestamp = this.getTimestamp();
+    const formattedQuantity = this.formatQuantity(quantity);
+    // Параметры должны быть в алфавитном порядке для подписи (Binance requirement)
+    const params = `positionSide=${positionSide}&quantity=${formattedQuantity}&side=${signal.side}&symbol=${Config.symbol}&timestamp=${timestamp}&type=MARKET`;
     const signature = this.sign(params);
 
     try {
@@ -104,7 +149,7 @@ export class OrderExecutor {
       );
 
       this.logger.info(
-        `Order executed, ID: ${res.data.orderId}, Status: ${res.data.status}`
+        `✅ Order executed, ID: ${res.data.orderId}, Status: ${res.data.status}`
       );
 
       // Ставим стоп и тейк если они указаны
@@ -158,11 +203,37 @@ export class OrderExecutor {
           `   SL: ${signal.stopLoss?.toFixed(2) || "N/A"} | TP: ${signal.takeProfit?.toFixed(2) || "N/A"}\n`
         );
       } else if (errorCode === -1022) {
+        const timeOffset = this.timeSync.getOffset();
+        const timeOffsetSecondsNum = timeOffset / 1000;
+        const timeOffsetSeconds = timeOffsetSecondsNum.toFixed(2);
+        
         this.logger.error(
-          `❌ SIGNATURE ERROR: Invalid signature. Check your API secret key in .env file.`,
+          `\n` +
+          `╔═══════════════════════════════════════════════════════════════╗\n` +
+          `║  ❌ SIGNATURE ERROR: Invalid signature (Code: -1022)        ║\n` +
+          `╚═══════════════════════════════════════════════════════════════╝\n` +
+          `\n` +
+          `🔍 Possible causes:\n` +
+          `   1. API secret key is incorrect in .env file\n` +
+          `   2. Time synchronization issue (offset: ${timeOffsetSecondsNum > 0 ? "+" : ""}${timeOffsetSeconds}s)\n` +
+          `   3. Request parameters are malformed\n` +
+          `\n` +
+          `📋 Request details:\n` +
+          `   Symbol: ${Config.symbol}\n` +
+          `   Side: ${signal.side}\n` +
+          `   Quantity: ${quantity}\n` +
+          `   Timestamp: ${timestamp}\n` +
+          `   Time offset: ${timeOffsetSeconds}s\n` +
+          `\n` +
+          `✅ Solutions:\n` +
+          `   1. Verify BINANCE_SECRET_KEY in .env file is correct\n` +
+          `   2. Check if time sync is working (should auto-sync on startup)\n` +
+          `   3. Ensure your system time is reasonably accurate\n`,
           {
             error: err.response?.data || err,
             signal,
+            timestamp,
+            timeOffset,
           }
         );
       } else {
@@ -193,14 +264,14 @@ export class OrderExecutor {
     const entryPrice = signal.price || 0;
 
     this.logger.info(
-      `[DRY RUN] Executing ${signal.side} order: qty=${quantity}, positionSide=${positionSide}`
+      `🚀 [DRY RUN] Executing ${signal.side} order: qty=${quantity}, positionSide=${positionSide}`
     );
 
     // Симулируем задержку исполнения
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     this.logger.info(
-      `[DRY RUN] Order executed: ${signal.side} ${quantity} ${Config.symbol}`
+      `✅ [DRY RUN] Order executed: ${signal.side} ${quantity} ${Config.symbol}`
     );
 
     // Симулируем установку SL/TP
@@ -225,7 +296,7 @@ export class OrderExecutor {
 
       this.dryRunPositions.set(positionId, position);
       this.logger.info(
-        `[DRY RUN] Position tracked: ${positionId} | Entry: ${entryPrice.toFixed(2)} | SL: ${signal.stopLoss.toFixed(2)} | TP: ${signal.takeProfit.toFixed(2)}`
+        `📊 [DRY RUN] Position opened: ${positionId} | Entry: ${entryPrice.toFixed(2)} | SL: ${signal.stopLoss.toFixed(2)} | TP: ${signal.takeProfit.toFixed(2)}`
       );
     }
   }
@@ -337,11 +408,13 @@ export class OrderExecutor {
 
     const opposite = side === "BUY" ? "SELL" : "BUY";
     const positionSide = side === "BUY" ? "LONG" : "SHORT";
-    const timestamp = Date.now();
+    const timestamp = this.getTimestamp();
 
     // STOP LOSS - используем STOP_MARKET с closePosition=true
     try {
-      const paramsSL = `symbol=${Config.symbol}&side=${opposite}&type=STOP_MARKET&stopPrice=${sl}&closePosition=true&positionSide=${positionSide}&timestamp=${timestamp}`;
+      // Параметры в алфавитном порядке для подписи
+      const formattedSL = this.formatQuantity(sl);
+      const paramsSL = `closePosition=true&positionSide=${positionSide}&side=${opposite}&stopPrice=${formattedSL}&symbol=${Config.symbol}&timestamp=${timestamp}&type=STOP_MARKET`;
       const signatureSL = this.sign(paramsSL);
 
       const resSL = await axios.post(
@@ -368,11 +441,11 @@ export class OrderExecutor {
 
     // TAKE PROFIT - используем TAKE_PROFIT_MARKET с closePosition=true
     try {
-      const paramsTP = `symbol=${
-        Config.symbol
-      }&side=${opposite}&type=TAKE_PROFIT_MARKET&stopPrice=${tp}&closePosition=true&positionSide=${positionSide}&timestamp=${
-        timestamp + 1
-      }`;
+      // Используем новый timestamp для TP запроса (чтобы избежать дубликатов)
+      const timestampTP = this.getTimestamp();
+      // Параметры в алфавитном порядке для подписи
+      const formattedTP = this.formatQuantity(tp);
+      const paramsTP = `closePosition=true&positionSide=${positionSide}&side=${opposite}&stopPrice=${formattedTP}&symbol=${Config.symbol}&timestamp=${timestampTP}&type=TAKE_PROFIT_MARKET`;
       const signatureTP = this.sign(paramsTP);
 
       const resTP = await axios.post(
@@ -427,16 +500,18 @@ export class OrderExecutor {
 
     // Если positionSide не указана, используем closePosition=true (закроет любую позицию)
     // Если указана, используем конкретную сторону
-    const timestamp = Date.now();
+    const timestamp = this.getTimestamp();
     let params: string;
 
     if (positionSide) {
       // Закрываем конкретную позицию
       const side = positionSide === "LONG" ? "SELL" : "BUY";
-      params = `symbol=${symbolToUse}&side=${side}&type=MARKET&closePosition=true&positionSide=${positionSide}&timestamp=${timestamp}`;
+      // Параметры в алфавитном порядке для подписи
+      params = `closePosition=true&positionSide=${positionSide}&side=${side}&symbol=${symbolToUse}&timestamp=${timestamp}&type=MARKET`;
     } else {
       // Закрываем любую открытую позицию (Binance определит автоматически)
-      params = `symbol=${symbolToUse}&side=SELL&type=MARKET&closePosition=true&timestamp=${timestamp}`;
+      // Параметры в алфавитном порядке для подписи
+      params = `closePosition=true&side=SELL&symbol=${symbolToUse}&timestamp=${timestamp}&type=MARKET`;
     }
 
     const signature = this.sign(params);

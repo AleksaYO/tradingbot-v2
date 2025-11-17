@@ -149,9 +149,12 @@ export class StrategyEngine {
         return null; // Эта свеча уже была обработана
       }
       this.lastProcessedKlineTime = lastKline.closeTime;
-      this.logger.info(
-        `🔍 Analyzing new candle: closeTime=${new Date(lastKline.closeTime).toLocaleTimeString()}, price=${price.toFixed(2)}, candles=${candles.length}`
-      );
+      // Логируем только периодически, чтобы не создавать спам
+      if (Math.random() < 0.1) { // 10% шанс логирования
+        this.logger.debug(
+          `🔍 Analyzing new candle: closeTime=${new Date(lastKline.closeTime).toLocaleTimeString()}, price=${price.toFixed(2)}, candles=${candles.length}`
+        );
+      }
     } else {
       // Если нет closeTime, все равно логируем
       this.logger.debug(
@@ -159,10 +162,12 @@ export class StrategyEngine {
       );
     }
 
-    // Используем SMC стратегию
-    this.logger.info(
-      `🔍 Running SMC strategy: candles=${candles.length}, price=${price.toFixed(2)}`
-    );
+    // Используем SMC стратегию (логируем только на уровне DEBUG и периодически)
+    if (Math.random() < 0.05) { // 5% шанс логирования
+      this.logger.debug(
+        `🔍 Running SMC strategy: candles=${candles.length}, price=${price.toFixed(2)}`
+      );
+    }
     
     const smcSignal = smcStrategy(candles, price, this.logger);
 
@@ -188,14 +193,14 @@ export class StrategyEngine {
       }
       this.lastSignalHash = signalHash;
 
-      this.logger.info(`SMC signal: ${JSON.stringify(smcSignal)}`);
+      this.logger.info(`🎯 SMC signal detected: ${JSON.stringify(smcSignal)}`);
 
       // Конвертируем SMCSignal в Signal
       const signal = convertToSignal(smcSignal, Config.symbol);
 
       // Дополнительная информация для логирования
       this.logger.info(
-        `SMC Entry Signal: ${signal.type} @ ${signal.entryPrice.toFixed(2)}, ` +
+        `🎯 SMC Entry Signal: ${signal.type} @ ${signal.entryPrice.toFixed(2)}, ` +
           `SL: ${signal.stopLoss.toFixed(2)}, TP: ${signal.takeProfit.toFixed(
             2
           )}, ` +

@@ -235,14 +235,19 @@ async function handleMarketData(
       }
     }
 
-    // Логируем все входящие данные для диагностики (только для kline)
+    // Логируем закрытые свечи только периодически, чтобы не засорять логи
+    // (особенно при подключении, когда приходит много исторических данных)
     if ("isClosed" in data && "symbol" in data) {
       const klineData = data as any;
       if (klineData.isClosed) {
-        logger.info(
-          `📊 Processing closed candle: ${klineData.close.toFixed(2)} USDT | ` +
-          `Time: ${new Date(klineData.closeTime).toLocaleTimeString()}`
-        );
+        // Логируем только каждую 10-ю свечу или при генерации сигнала
+        // (логирование при сигнале будет ниже)
+        if (Math.random() < 0.1) { // 10% шанс
+          logger.debug(
+            `📊 Processing closed candle: ${klineData.close.toFixed(2)} USDT | ` +
+            `Time: ${new Date(klineData.closeTime).toLocaleTimeString()}`
+          );
+        }
       } else {
         logger.debug(
           `📊 Received open candle update: ${klineData.close.toFixed(2)} USDT`
@@ -258,7 +263,7 @@ async function handleMarketData(
     }
 
     // Генерация сигнала (только для закрытых свечей или данных без isClosed)
-    logger.info(`🔍 Calling strategy.process() for closed candle`);
+    // Не логируем каждый вызов strategy.process() - это создает спам при обработке исторических данных
     const signal = strategy.process(data);
     if (!signal) {
       // Логируем только периодически, чтобы не засорять логи
@@ -298,6 +303,14 @@ async function handleMarketData(
     await executor.execute(executorSignal);
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);
+    
+    // Не логируем ошибки, которые уже обработаны в OrderExecutor
+    // (например, ошибки подписи или API ключей)
+    if (errorMessage.includes("Signature") || errorMessage.includes("API key") || errorMessage.includes("permissions")) {
+      // Эти ошибки уже залогированы в OrderExecutor с детальной информацией
+      return;
+    }
+    
     logger.error(`Error processing market data: ${errorMessage}`, {
       error: error instanceof Error ? error.stack : String(error),
     });

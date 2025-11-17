@@ -80,9 +80,28 @@ export class Logger {
   }
 
   private formatMessage(level: string, msg: string, data?: any): string {
-    const timestamp = new Date().toISOString();
+    // Форматируем время в локальном формате: YYYY-MM-DD HH:mm:ss
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    const hours = String(now.getHours()).padStart(2, '0');
+    const minutes = String(now.getMinutes()).padStart(2, '0');
+    const seconds = String(now.getSeconds()).padStart(2, '0');
+    const milliseconds = String(now.getMilliseconds()).padStart(3, '0');
+    const timestamp = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}.${milliseconds}`;
+    
+    // Эмодзи для разных уровней логирования
+    const levelEmoji: Record<string, string> = {
+      info: "ℹ️",
+      error: "❌",
+      warn: "⚠️",
+      debug: "🔍"
+    };
+    
+    const emoji = levelEmoji[level.toLowerCase()] || "ℹ️";
     const dataStr = data ? ` | ${JSON.stringify(data)}` : "";
-    return `[${timestamp}] [${level.toUpperCase()}] ${msg}${dataStr}`;
+    return `[${timestamp}] ${emoji} ${msg}${dataStr}`;
   }
 
   info(msg: string, data?: any): void {
