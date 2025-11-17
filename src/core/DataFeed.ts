@@ -13,6 +13,11 @@ export class DataFeed extends EventEmitter {
   private klines: KlineData[] = [];
   private orderBook: OrderBook;
   private maxKlines: number = 500;
+  private statusTimer: NodeJS.Timeout | null = null;
+  private lastKlineTime: number = 0;
+  private dataReceivedCount: number = 0;
+  private aggTradeCount: number = 0;
+  private depthCount: number = 0;
 
   constructor(logger: Logger) {
     super();
@@ -41,11 +46,22 @@ export class DataFeed extends EventEmitter {
         this.emit("marketData", data);
       },
       onAggTrade: (data: AggTradeData) => {
+        this.aggTradeCount++;
         this.processAggTrade(data);
+        // Логируем только периодически, чтобы не засорять логи
+        if (this.aggTradeCount % 100 === 0) {
+          this.logger.debug(`📈 AggTrade: ${data.price.toFixed(2)} USDT, qty: ${data.quantity.toFixed(4)}`);
+        }
         this.emit("marketData", data);
       },
       onDepth: (data: DepthData) => {
+        this.depthCount++;
         this.processDepth(data);
+        // Логируем только периодически
+        if (this.depthCount % 50 === 0) {
+          const midPrice = this.getMidPrice();
+          this.logger.debug(`📊 Depth update: midPrice=${midPrice?.toFixed(2) || "N/A"} USDT`);
+        }
         this.emit("marketData", data);
       },
       onError: (error: Error) => {
@@ -66,17 +82,53 @@ export class DataFeed extends EventEmitter {
     this.ws.connect();
 
     this.logger.info("DataFeed started");
+    
+    // Запускаем периодическое логирование статуса (каждые 5 минут)
+    this.startStatusLogging();
   }
 
   /**
    * Остановка получения данных
    */
   async stop(): Promise<void> {
+    if (this.statusTimer) {
+      clearInterval(this.statusTimer);
+      this.statusTimer = null;
+    }
     if (this.ws) {
       this.ws.disconnect();
       this.ws = null;
     }
     this.logger.info("DataFeed stopped");
+  }
+
+  /**
+   * Запуск периодического логирования статуса
+   */
+  private startStatusLogging(): void {
+    // Логируем статус каждые 5 минут
+    this.statusTimer = setInterval(() => {
+      const midPrice = this.getMidPrice();
+      const latestKline = this.getLatestKline();
+      const klinesCount = this.klines.length;
+      const timeSinceLastKline = this.lastKlineTime > 0 
+        ? Math.floor((Date.now() - this.lastKlineTime) / 1000 / 60)
+        : null;
+
+      this.logger.info(
+        `[STATUS] Bot is running | Price: ${midPrice?.toFixed(2) || "N/A"} USDT | ` +
+        `Candles: ${klinesCount} | Klines: ${this.dataReceivedCount} | AggTrades: ${this.aggTradeCount} | Depth: ${this.depthCount} | ` +
+        `Last candle: ${timeSinceLastKline !== null ? `${timeSinceLastKline} min ago` : "N/A"}`
+      );
+    }, 5 * 60 * 1000); // 5 минут
+
+    // Первый статус через 1 минуту после запуска
+    setTimeout(() => {
+      const midPrice = this.getMidPrice();
+      this.logger.info(
+        `[STATUS] Bot initialized | Current price: ${midPrice?.toFixed(2) || "waiting for data..."} USDT`
+      );
+    }, 60 * 1000);
   }
 
   /**
@@ -90,6 +142,8 @@ export class DataFeed extends EventEmitter {
    * Обработка данных свечей
    */
   private processKline(data: KlineData): void {
+    this.dataReceivedCount++;
+    
     const kline: KlineData = {
       symbol: data.symbol,
       interval: data.interval,
@@ -103,8 +157,9 @@ export class DataFeed extends EventEmitter {
       isClosed: data.isClosed,
     };
 
-    // Добавляем только закрытые свечи для анализа
+    // Логируем все свечи для диагностики
     if (kline.isClosed) {
+      this.lastKlineTime = Date.now();
       this.klines.push(kline);
 
       // Ограничиваем размер массива
@@ -112,11 +167,20 @@ export class DataFeed extends EventEmitter {
         this.klines.shift();
       }
 
-      this.logger.debug(
-        `Processed closed kline: ${kline.close} at ${new Date(
-          kline.closeTime
-        ).toISOString()}`
+      // Логируем закрытые свечи на уровне INFO для видимости
+      this.logger.info(
+        `📊 Closed candle: ${kline.close.toFixed(2)} USDT | ` +
+        `H: ${kline.high.toFixed(2)} L: ${kline.low.toFixed(2)} | ` +
+        `Volume: ${kline.volume.toFixed(2)} | Time: ${new Date(kline.closeTime).toLocaleTimeString()}`
       );
+    } else {
+      // Логируем незакрытые свечи на уровне DEBUG (только периодически)
+      if (this.dataReceivedCount % 10 === 0) {
+        this.logger.debug(
+          `📊 Open candle update: ${kline.close.toFixed(2)} USDT | ` +
+          `H: ${kline.high.toFixed(2)} L: ${kline.low.toFixed(2)}`
+        );
+      }
     }
   }
 

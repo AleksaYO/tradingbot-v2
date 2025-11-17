@@ -52,8 +52,20 @@ async function main(): Promise<void> {
           "Please configure real API keys in .env file before running in LIVE mode!"
         );
       }
+      
+      // Проверка формата API ключа (должен быть не пустым и не слишком коротким)
+      if (Config.apiKey.length < 20 || Config.apiSecret.length < 20) {
+        logger.warn(
+          "⚠️  WARNING: API key or secret seems too short. Please verify your API keys are correct."
+        );
+      }
+      
       logger.warn("🚨🚨🚨 LIVE MODE - Real trades will be executed! 🚨🚨🚨");
       logger.warn("⚠️  Make sure you understand the risks!");
+      logger.warn("⚠️  IMPORTANT: Ensure your API key has:");
+      logger.warn("   - 'Enable Futures' permission enabled");
+      logger.warn("   - Your IP address whitelisted (or IP restriction disabled)");
+      logger.warn("   - Created as 'Futures API' (not Spot API)");
       logger.warn("⚠️  Starting in 3 seconds... Press Ctrl+C to cancel");
       await new Promise((resolve) => setTimeout(resolve, 3000));
     } else {
@@ -150,34 +162,122 @@ async function handleMarketData(
   data: unknown,
   components: TradingBotComponents
 ): Promise<void> {
-  const { strategy, risk, executor, logger } = components;
+  const { strategy, risk, executor, logger, dataFeed } = components;
 
   try {
     // Валидация данных
     if (!data || typeof data !== "object") {
+      logger.debug("Invalid data received (not an object)");
       return; // Пропускаем некорректные данные
     }
-
-    // Обрабатываем только закрытые свечи для оптимизации
-    // (kline с isClosed=true или новые свечи)
-    if ("isClosed" in data && !(data as any).isClosed) {
-      return; // Пропускаем незакрытые свечи
+    
+    // Логируем тип данных для диагностики
+    const dataType = "isClosed" in data ? "kline" : "price" in data ? "aggTrade" : "bids" in data ? "depth" : "unknown";
+    if (dataType === "kline") {
+      logger.debug(`Received ${dataType} data: isClosed=${(data as any).isClosed}`);
     }
 
-    // Генерация сигнала
+    // Проверяем открытые позиции в DRY RUN режиме при получении новых данных
+    if (Config.dryRun) {
+      let currentPrice: number | null = null;
+      let high: number | undefined = undefined;
+      let low: number | undefined = undefined;
+
+      // Извлекаем цену из данных
+      if ("close" in data && typeof (data as any).close === "number") {
+        currentPrice = (data as any).close;
+        if ("high" in data && typeof (data as any).high === "number") {
+          high = (data as any).high;
+        }
+        if ("low" in data && typeof (data as any).low === "number") {
+          low = (data as any).low;
+        }
+      } else if ("price" in data && typeof (data as any).price === "number") {
+        currentPrice = (data as any).price;
+      } else if (dataFeed) {
+        currentPrice = dataFeed.getMidPrice();
+      }
+
+      if (currentPrice !== null) {
+        const statsBefore = executor.getDryRunStats();
+        executor.checkDryRunPositions(currentPrice, high, low);
+        const statsAfter = executor.getDryRunStats();
+        
+        // Логируем статус позиций при изменении количества
+        if (statsAfter.openPositions !== statsBefore.openPositions) {
+          if (statsAfter.openPositions > 0) {
+            const positions = statsAfter.positions.map(p => {
+              const pnl = p.positionSide === "LONG" 
+                ? (currentPrice - p.entryPrice) * p.quantity
+                : (p.entryPrice - currentPrice) * p.quantity;
+              const pnlPercent = p.positionSide === "LONG"
+                ? ((currentPrice - p.entryPrice) / p.entryPrice) * 100
+                : ((p.entryPrice - currentPrice) / p.entryPrice) * 100;
+              return `${p.positionSide} @ ${p.entryPrice.toFixed(2)} (PnL: ${pnl > 0 ? "+" : ""}${pnl.toFixed(2)} USDT, ${pnlPercent > 0 ? "+" : ""}${pnlPercent.toFixed(2)}%)`;
+            }).join(" | ");
+            logger.info(
+              `[DRY RUN] Open positions: ${statsAfter.openPositions} | ${positions} | Current price: ${currentPrice.toFixed(2)}`
+            );
+          } else {
+            logger.info(`[DRY RUN] All positions closed`);
+          }
+        } else if (statsAfter.openPositions > 0 && Math.random() < 0.05) { // 5% шанс периодического логирования
+          const positions = statsAfter.positions.map(p => {
+            const pnl = p.positionSide === "LONG" 
+              ? (currentPrice - p.entryPrice) * p.quantity
+              : (p.entryPrice - currentPrice) * p.quantity;
+            return `${p.positionSide} @ ${p.entryPrice.toFixed(2)} (PnL: ${pnl > 0 ? "+" : ""}${pnl.toFixed(2)} USDT)`;
+          }).join(" | ");
+          logger.debug(
+            `[DRY RUN] Tracking ${statsAfter.openPositions} position(s): ${positions} | Current price: ${currentPrice.toFixed(2)}`
+          );
+        }
+      }
+    }
+
+    // Логируем все входящие данные для диагностики (только для kline)
+    if ("isClosed" in data && "symbol" in data) {
+      const klineData = data as any;
+      if (klineData.isClosed) {
+        logger.info(
+          `📊 Processing closed candle: ${klineData.close.toFixed(2)} USDT | ` +
+          `Time: ${new Date(klineData.closeTime).toLocaleTimeString()}`
+        );
+      } else {
+        logger.debug(
+          `📊 Received open candle update: ${klineData.close.toFixed(2)} USDT`
+        );
+      }
+    }
+
+    // Обрабатываем только закрытые свечи для генерации сигналов
+    // (kline с isClosed=true)
+    if ("isClosed" in data && !(data as any).isClosed) {
+      logger.debug("Skipping open candle (waiting for closed candle)");
+      return; // Пропускаем незакрытые свечи для генерации сигналов
+    }
+
+    // Генерация сигнала (только для закрытых свечей или данных без isClosed)
+    logger.info(`🔍 Calling strategy.process() for closed candle`);
     const signal = strategy.process(data);
     if (!signal) {
+      // Логируем только периодически, чтобы не засорять логи
+      if (Math.random() < 0.05) { // 5% шанс
+        logger.debug("No signal generated by strategy (this is normal)");
+      }
       return; // Нет сигнала - это нормально
     }
 
-    logger.info(`Signal generated: ${JSON.stringify(signal)}`);
+    logger.info(`✅ Signal generated: ${JSON.stringify(signal)}`);
 
     // Валидация сигнала через риск-менеджер
+    logger.debug("Validating signal through risk manager...");
     const validatedSignal = risk.validateSignal(signal);
     if (!validatedSignal) {
-      logger.info("Signal rejected by risk manager");
+      logger.warn("❌ Signal rejected by risk manager");
       return;
     }
+    logger.info(`✅ Signal validated by risk manager`);
 
     // Преобразуем signal в формат для OrderExecutor (side вместо type)
     const executorSignal: any = {

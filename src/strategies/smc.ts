@@ -61,23 +61,29 @@ export interface SMCSignal {
  */
 export function smcStrategy(
   candles: KlineData[],
-  lastPrice: number
+  lastPrice: number,
+  logger?: any // Опциональный logger для диагностики
 ): SMCSignal | null {
   if (candles.length < 10) {
+    if (logger) logger.debug(`SMC: Not enough candles: ${candles.length} < 10`);
     return null; // Недостаточно данных
   }
 
   // 1. Находим Swing точки
   const swings = findSwings(candles, 3);
   if (swings.length < 4) {
+    if (logger) logger.debug(`SMC: Not enough swings: ${swings.length} < 4`);
     return null; // Недостаточно Swing точек
   }
+  if (logger) logger.debug(`SMC: Found ${swings.length} swing points`);
 
   // 2. Определяем структуру (BOS)
   const structure = detectStructure(swings);
   if (!structure) {
+    if (logger) logger.debug(`SMC: No BOS detected`);
     return null; // Нет BOS
   }
+  if (logger) logger.info(`SMC: BOS detected: ${structure.direction} @ ${structure.price.toFixed(2)}`);
 
   // 3. Находим FVG (для дополнительного анализа)
   const fvgs = findFVG(candles);
@@ -85,19 +91,25 @@ export function smcStrategy(
   // 4. Находим Order Block, который вызвал BOS
   const orderBlock = findOrderBlock(candles, structure);
   if (!orderBlock) {
+    if (logger) logger.debug(`SMC: Order Block not found for BOS`);
     return null; // Order Block не найден
   }
+  if (logger) logger.info(`SMC: Order Block found: ${orderBlock.type} @ ${orderBlock.low.toFixed(2)}-${orderBlock.high.toFixed(2)}`);
 
   // 5. Проверяем, что Order Block еще валиден (не пробит)
   const validOBs = getValidOrderBlocks([orderBlock], lastPrice);
   if (validOBs.length === 0) {
+    if (logger) logger.debug(`SMC: Order Block broken/invalid. Price: ${lastPrice.toFixed(2)}, OB: ${orderBlock.low.toFixed(2)}-${orderBlock.high.toFixed(2)}`);
     return null; // Order Block пробит
   }
 
   // 6. Правило входа: цена должна быть в Order Block
+  const priceInOB = isPriceInOrderBlock(orderBlock, lastPrice);
+  if (logger) logger.info(`SMC: Price ${lastPrice.toFixed(2)} in Order Block: ${priceInOB} (OB: ${orderBlock.low.toFixed(2)}-${orderBlock.high.toFixed(2)})`);
+  
   if (structure.direction === "bullish") {
     // Bullish BOS: цена откатывается в Order Block
-    if (isPriceInOrderBlock(orderBlock, lastPrice)) {
+    if (priceInOB) {
       // Находим ближайший FVG для дополнительной информации
       const nearestFVG = getNearestUnfilledFVG(fvgs, lastPrice, "bullish");
 

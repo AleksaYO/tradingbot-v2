@@ -28,13 +28,19 @@ export interface Config {
 }
 
 export const Config: Config = {
-  apiKey: process.env.BINANCE_KEY || process.env.BINANCE_API_KEY || "",
-  apiSecret: process.env.BINANCE_SECRET || process.env.BINANCE_SECRET_KEY || "",
+  apiKey:
+    process.env.BINANCE_KEY ||
+    process.env.BINANCE_API_KEY ||
+    "nzSUulKFqTBAs6NXXY1e6NueHChe35CoPZpuY1P96l5qWZARmcuvYhZYZefY23Cc",
+  apiSecret:
+    process.env.BINANCE_SECRET ||
+    process.env.BINANCE_SECRET_KEY ||
+    "swxIz7zIy5QO0YmLqPw1SHJDewTkug8tfIpoopLF8S0aMee8rzqbNsMV6QbJbTRU",
   symbol: process.env.SYMBOL || "BTCUSDT",
   leverage: parseInt(process.env.LEVERAGE || "20", 10),
   risk: {
     maxDailyLoss: parseFloat(process.env.MAX_DAILY_LOSS || "50"),
-    maxPositionSize: parseFloat(process.env.MAX_POSITION_SIZE || "0.02"),
+    maxPositionSize: parseFloat(process.env.MAX_POSITION_SIZE || "0.002"),
     stopLossPercent: parseFloat(process.env.STOP_LOSS_PERCENT || "0.5"),
     takeProfitPercent: parseFloat(process.env.TAKE_PROFIT_PERCENT || "1.2"),
   },
