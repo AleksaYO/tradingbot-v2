@@ -79,9 +79,29 @@ export class BinanceWebSocket {
     this.logger.info(`Connecting to Binance WebSocket: ${url}`);
 
     try {
+      // Добавляем таймаут для подключения (30 секунд)
+      const connectionTimeout = 30000;
+      let connectionTimer: NodeJS.Timeout | null = null;
+
       this.ws = new WebSocket(url);
 
+      // Устанавливаем таймаут подключения
+      connectionTimer = setTimeout(() => {
+        if (this.ws && this.ws.readyState !== WebSocket.OPEN) {
+          this.logger.error(`WebSocket connection timeout after ${connectionTimeout}ms`);
+          if (this.ws) {
+            this.ws.terminate();
+          }
+          connectionTimer = null;
+        }
+      }, connectionTimeout);
+
       this.ws.on("open", () => {
+        // Очищаем таймаут при успешном подключении
+        if (connectionTimer) {
+          clearTimeout(connectionTimer);
+          connectionTimer = null;
+        }
         this.logger.info("WebSocket connected to Binance");
         this.isConnected = true;
         this.resetReconnectAttempts(); // Сбрасываем счетчик при успешном подключении
@@ -111,8 +131,26 @@ export class BinanceWebSocket {
       });
 
       this.ws.on("error", (error: Error) => {
+        // Очищаем таймаут при ошибке
+        if (connectionTimer) {
+          clearTimeout(connectionTimer);
+          connectionTimer = null;
+        }
+
         const errorMessage = error.message || "Unknown WebSocket error";
-        this.logger.error(`WebSocket error: ${errorMessage}`, { error });
+        const errorCode = (error as any).code;
+        
+        // Улучшенная обработка ошибок таймаута
+        if (errorCode === "ETIMEDOUT" || errorMessage.includes("timeout") || errorMessage.includes("ETIMEDOUT")) {
+          this.logger.error(
+            `WebSocket connection timeout: ${errorMessage} | ` +
+            `This usually means network connectivity issues or Binance server is unreachable. ` +
+            `The bot will attempt to reconnect automatically.`
+          );
+        } else {
+          this.logger.error(`WebSocket error: ${errorMessage}`, { error });
+        }
+        
         this.isConnected = false;
         this.stopPing();
         
@@ -123,6 +161,12 @@ export class BinanceWebSocket {
       });
 
       this.ws.on("close", (code: number, reason: Buffer) => {
+        // Очищаем таймаут при закрытии
+        if (connectionTimer) {
+          clearTimeout(connectionTimer);
+          connectionTimer = null;
+        }
+
         const reasonStr = reason ? reason.toString() : "No reason provided";
         this.logger.warn(`WebSocket closed: code=${code}, reason=${reasonStr}`);
         this.isConnected = false;

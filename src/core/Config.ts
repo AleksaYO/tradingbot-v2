@@ -30,12 +30,10 @@ export interface Config {
 export const Config: Config = {
   apiKey:
     process.env.BINANCE_KEY ||
-    process.env.BINANCE_API_KEY ||
-    "nzSUulKFqTBAs6NXXY1e6NueHChe35CoPZpuY1P96l5qWZARmcuvYhZYZefY23Cc",
+    "YrwNGFcNmf7m9xX59xmapsn2zwyMpzSjRoSBPSrCTqbabSNYTUU6biXOx5KI2FlG",
   apiSecret:
     process.env.BINANCE_SECRET ||
-    process.env.BINANCE_SECRET_KEY ||
-    "swxIz7zIy5QO0YmLqPw1SHJDewTkug8tfIpoopLF8S0aMee8rzqbNsMV6QbJbTRU",
+    "UcWSv92zdKOibIv72AbFoYL1EfLOmVFyEofxyIHGEaoiJEMORidJseQFWW31dtva",
   symbol: process.env.SYMBOL || "BTCUSDT",
   leverage: parseInt(process.env.LEVERAGE || "20", 10),
   risk: {

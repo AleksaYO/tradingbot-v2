@@ -136,3 +136,7 @@ tail -f logs/tradingbot.log
 # Или ищите сигналы
 
 grep "SMC signal" logs/tradingbot.log
+
+warning: in the working copy of 'src/core/DataFeed.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/core/OrderExecutor.ts', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/utils/websocket.ts', LF will be replaced by CRLF the next time Git touches it

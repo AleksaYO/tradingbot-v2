@@ -53,21 +53,24 @@ export class TimeSync {
     this.isSyncing = true;
 
     try {
-      const localTime = Date.now();
+      const localTimeBefore = Date.now();
       
       // Получаем время сервера Binance Futures
       const response = await axios.get("https://fapi.binance.com/fapi/v1/time", {
         timeout: 5000,
       });
 
+      const localTimeAfter = Date.now();
       const serverTime = response.data.serverTime;
       
       if (!serverTime || typeof serverTime !== "number") {
         throw new Error("Invalid server time response from Binance");
       }
 
-      // Вычисляем offset: serverTime - localTime
-      this.timeOffset = serverTime - localTime;
+      // Вычисляем offset с учетом задержки сети
+      // Используем среднее время между запросом и ответом для более точной синхронизации
+      const localTimeAvg = (localTimeBefore + localTimeAfter) / 2;
+      this.timeOffset = serverTime - localTimeAvg;
       this.lastSyncTime = Date.now();
 
       if (this.logger) {

@@ -54,7 +54,7 @@ export class OrderExecutor {
     this.logger = logger;
     this.risk = risk;
     this.timeSync = TimeSync.getInstance(logger);
-    
+
     // Инициализируем синхронизацию времени при создании OrderExecutor
     this.initializeTimeSync();
   }
@@ -67,7 +67,8 @@ export class OrderExecutor {
       // startAutoSync() уже вызывает синхронизацию при старте, поэтому не нужно вызывать sync() отдельно
       this.timeSync.startAutoSync(); // Автоматическая синхронизация каждый час (включает первую синхронизацию)
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
       this.logger.warn(`Failed to initialize time sync: ${errorMessage}`);
     }
   }
@@ -76,14 +77,24 @@ export class OrderExecutor {
    * Получение синхронизированного времени для запросов
    */
   private getTimestamp(): number {
-    // Проверяем, нужна ли повторная синхронизация
-    if (this.timeSync.needsResync()) {
-      // Асинхронно синхронизируем, но не ждем (не блокируем запрос)
-      this.timeSync.sync().catch(() => {
+    const offset = this.timeSync.getOffset();
+    const offsetSeconds = Math.abs(offset) / 1000;
+    
+    // Если offset больше 1 секунды или нужна повторная синхронизация, запускаем синхронизацию
+    if (offsetSeconds > 1.0 || this.timeSync.needsResync()) {
+      // Асинхронно синхронизируем (не блокируем, но запускаем процесс)
+      this.timeSync.sync(true).catch(() => {
         // Ошибка уже залогирована в TimeSync
       });
+      
+      // Предупреждаем, если offset слишком большой
+      if (offsetSeconds > 1.0) {
+        this.logger.warn(
+          `⚠️  Large time offset detected: ${offsetSeconds.toFixed(2)}s. Syncing time...`
+        );
+      }
     }
-    
+
     return this.timeSync.getSyncedTime();
   }
 
@@ -100,7 +111,7 @@ export class OrderExecutor {
    */
   private formatQuantity(quantity: number): string {
     // Убираем лишние нули, но сохраняем до 8 знаков после запятой
-    return quantity.toString().replace(/\.?0+$/, '');
+    return quantity.toString().replace(/\.?0+$/, "");
   }
 
   /**
@@ -108,8 +119,30 @@ export class OrderExecutor {
    */
   async execute(signal: TradingSignal): Promise<void> {
     // Валидация API ключей для live режима
-    if (!Config.dryRun && (!Config.apiKey || !Config.apiSecret)) {
-      throw new Error("API keys not configured for live trading");
+    if (!Config.dryRun) {
+      if (!Config.apiKey || !Config.apiSecret) {
+        const errorMsg = 
+          `❌ API keys not configured for live trading!\n` +
+          `   Current mode: LIVE (dryRun=false)\n` +
+          `   To enable live trading, set BINANCE_KEY and BINANCE_SECRET in .env file\n` +
+          `   To use simulation mode, set DRY_RUN=true in .env file`;
+        this.logger.error(errorMsg);
+        throw new Error("API keys not configured for live trading");
+      }
+
+      // Проверяем, что API ключи не являются дефолтными (placeholder значения)
+      const defaultKeyPattern = /^[A-Za-z0-9]{50,}$/;
+      if (
+        Config.apiKey.length < 20 ||
+        Config.apiSecret.length < 20 ||
+        Config.apiKey === "YOUR_API_KEY_HERE" ||
+        Config.apiSecret === "YOUR_SECRET_KEY_HERE"
+      ) {
+        this.logger.warn(
+          `⚠️  API keys appear to be placeholder values. ` +
+          `Please set real API keys in .env file or enable DRY_RUN mode.`
+        );
+      }
     }
 
     if (Config.dryRun) {
@@ -169,86 +202,122 @@ export class OrderExecutor {
       const errorMessage =
         err.response?.data?.msg || err.message || String(err);
       const errorCode = err.response?.data?.code;
-      const requestIp = err.response?.data?.requestIp || err.response?.headers?.['x-mbx-used-weight'] || "unknown";
-      
+      const requestIp =
+        err.response?.data?.requestIp ||
+        err.response?.headers?.["x-mbx-used-weight"] ||
+        "unknown";
+
       // Детальная обработка ошибок API
-      if (errorCode === -2015 || errorMessage.includes("Invalid API-key") || errorMessage.includes("permissions")) {
+      if (
+        errorCode === -2015 ||
+        errorMessage.includes("Invalid API-key") ||
+        errorMessage.includes("permissions")
+      ) {
+        // Проверяем, не в dry-run ли мы (хотя это не должно произойти, но на всякий случай)
+        const modeInfo = Config.dryRun 
+          ? `\n   ⚠️  NOTE: You are in DRY_RUN mode. This error should not occur.\n   Consider setting DRY_RUN=true in .env file to avoid API key issues.\n`
+          : `\n   ⚠️  Current mode: LIVE trading (DRY_RUN=false)\n   To use simulation mode, set DRY_RUN=true in .env file\n`;
+
         this.logger.error(
           `\n` +
-          `╔═══════════════════════════════════════════════════════════════╗\n` +
-          `║  ❌ API KEY ERROR: Invalid API-key, IP, or permissions      ║\n` +
-          `╚═══════════════════════════════════════════════════════════════╝\n` +
-          `\n` +
-          `Request IP: ${requestIp}\n` +
-          `Error Code: ${errorCode || "N/A"}\n` +
-          `\n` +
-          `🔍 Possible causes:\n` +
-          `   1. API key is incorrect or expired\n` +
-          `   2. Your IP address (${requestIp}) is not whitelisted\n` +
-          `   3. API key doesn't have "Enable Futures" permission\n` +
-          `   4. API key is for Spot trading, but you need Futures API key\n` +
-          `   5. IP restriction is enabled but your IP is not in whitelist\n` +
-          `\n` +
-          `✅ Solution - Check your API key settings on Binance:\n` +
-          `   1. Go to: https://www.binance.com/en/my/settings/api-management\n` +
-          `   2. Select your API key (or create new Futures API key)\n` +
-          `   3. Enable "Enable Futures" permission (MUST BE ENABLED!)\n` +
-          `   4. For IP restriction:\n` +
-          `      - Option A: Disable IP restriction (for testing)\n` +
-          `      - Option B: Add your IP (${requestIp}) to whitelist\n` +
-          `   5. Make sure you're using Futures API key, not Spot API key\n` +
-          `\n` +
-          `⚠️  IMPORTANT: The bot generated a valid signal but cannot execute it!\n` +
-          `   Signal: ${signal.side} ${quantity} ${Config.symbol} @ ${signal.price?.toFixed(2) || "market price"}\n` +
-          `   SL: ${signal.stopLoss?.toFixed(2) || "N/A"} | TP: ${signal.takeProfit?.toFixed(2) || "N/A"}\n`
+            `╔═══════════════════════════════════════════════════════════════╗\n` +
+            `║  ❌ API KEY ERROR: Invalid API-key, IP, or permissions      ║\n` +
+            `╚═══════════════════════════════════════════════════════════════╝\n` +
+            `\n` +
+            `Request IP: ${requestIp}\n` +
+            `Error Code: ${errorCode || "N/A"}\n` +
+            modeInfo +
+            `\n` +
+            `🔍 Possible causes:\n` +
+            `   1. API key is incorrect or expired\n` +
+            `   2. Your IP address (${requestIp}) is not whitelisted\n` +
+            `   3. API key doesn't have "Enable Futures" permission\n` +
+            `   4. API key is for Spot trading, but you need Futures API key\n` +
+            `   5. IP restriction is enabled but your IP is not in whitelist\n` +
+            `\n` +
+            `✅ Solution - Check your API key settings on Binance:\n` +
+            `   1. Go to: https://www.binance.com/en/my/settings/api-management\n` +
+            `   2. Select your API key (or create new Futures API key)\n` +
+            `   3. Enable "Enable Futures" permission (MUST BE ENABLED!)\n` +
+            `   4. For IP restriction:\n` +
+            `      - Option A: Disable IP restriction (for testing)\n` +
+            `      - Option B: Add your IP (${requestIp}) to whitelist\n` +
+            `   5. Make sure you're using Futures API key, not Spot API key\n` +
+            `\n` +
+            `💡 Quick fix: Set DRY_RUN=true in .env file to test without API keys\n` +
+            `\n` +
+            `⚠️  IMPORTANT: The bot generated a valid signal but cannot execute it!\n` +
+            `   Signal: ${signal.side} ${quantity} ${Config.symbol} @ ${
+              signal.price?.toFixed(2) || "market price"
+            }\n` +
+            `   SL: ${signal.stopLoss?.toFixed(2) || "N/A"} | TP: ${
+              signal.takeProfit?.toFixed(2) || "N/A"
+            }\n`
         );
       } else if (errorCode === -1022) {
         const timeOffset = this.timeSync.getOffset();
         const timeOffsetSecondsNum = timeOffset / 1000;
         const timeOffsetSeconds = timeOffsetSecondsNum.toFixed(2);
-        
+        const lastSyncTime = this.timeSync.getLastSyncTime();
+        const timeSinceSync = lastSyncTime > 0 ? Date.now() - lastSyncTime : 0;
+        const timeSinceSyncMinutes = (timeSinceSync / 1000 / 60).toFixed(1);
+
+        // Логируем query string для отладки (без signature)
+        const paramsForLog = params;
+
         this.logger.error(
           `\n` +
-          `╔═══════════════════════════════════════════════════════════════╗\n` +
-          `║  ❌ SIGNATURE ERROR: Invalid signature (Code: -1022)        ║\n` +
-          `╚═══════════════════════════════════════════════════════════════╝\n` +
-          `\n` +
-          `🔍 Possible causes:\n` +
-          `   1. API secret key is incorrect in .env file\n` +
-          `   2. Time synchronization issue (offset: ${timeOffsetSecondsNum > 0 ? "+" : ""}${timeOffsetSeconds}s)\n` +
-          `   3. Request parameters are malformed\n` +
-          `\n` +
-          `📋 Request details:\n` +
-          `   Symbol: ${Config.symbol}\n` +
-          `   Side: ${signal.side}\n` +
-          `   Quantity: ${quantity}\n` +
-          `   Timestamp: ${timestamp}\n` +
-          `   Time offset: ${timeOffsetSeconds}s\n` +
-          `\n` +
-          `✅ Solutions:\n` +
-          `   1. Verify BINANCE_SECRET_KEY in .env file is correct\n` +
-          `   2. Check if time sync is working (should auto-sync on startup)\n` +
-          `   3. Ensure your system time is reasonably accurate\n`,
+            `╔═══════════════════════════════════════════════════════════════╗\n` +
+            `║  ❌ SIGNATURE ERROR: Invalid signature (Code: -1022)        ║\n` +
+            `╚═══════════════════════════════════════════════════════════════╝\n` +
+            `\n` +
+            `🔍 Possible causes:\n` +
+            `   1. API secret key is incorrect in .env file\n` +
+            `   2. Time synchronization issue (offset: ${
+              timeOffsetSecondsNum > 0 ? "+" : ""
+            }${timeOffsetSeconds}s)\n` +
+            `   3. Request parameters are malformed\n` +
+            `\n` +
+            `📋 Request details:\n` +
+            `   Symbol: ${Config.symbol}\n` +
+            `   Side: ${signal.side}\n` +
+            `   Quantity: ${quantity}\n` +
+            `   Timestamp: ${timestamp}\n` +
+            `   Time offset: ${timeOffsetSeconds}s\n` +
+            `   Last sync: ${timeSinceSyncMinutes} minutes ago\n` +
+            `   Query string: ${paramsForLog}\n` +
+            `\n` +
+            `✅ Solutions:\n` +
+            `   1. Verify BINANCE_SECRET_KEY in .env file is correct\n` +
+            `   2. Synchronize system time: w32tm /resync (Windows) or sudo ntpdate -s time.nist.gov (Linux)\n` +
+            `   3. Restart the bot to force time synchronization\n` +
+            `   4. Check if API secret key has not expired or been regenerated\n`,
           {
             error: err.response?.data || err,
             signal,
             timestamp,
             timeOffset,
+            queryString: paramsForLog,
           }
         );
+        
+        // Пытаемся принудительно синхронизировать время после ошибки
+        this.timeSync.sync(true).catch(() => {
+          // Ошибка уже залогирована в TimeSync
+        });
       } else {
         this.logger.error(`Execution error: ${errorMessage}`, {
           error: err.response?.data || err,
           signal,
         });
       }
-      
+
       // Не прерываем работу бота из-за ошибки API - просто логируем
       // Пользователь может исправить настройки и бот продолжит работу
       this.logger.warn(
         `⚠️  Bot will continue running, but trades will fail until API key is fixed.`
       );
-      
+
       // В live режиме не бросаем исключение, чтобы бот продолжал работать
       // В dry-run режиме тоже не бросаем
       // throw err; // Закомментировано - бот продолжит работу
@@ -296,7 +365,11 @@ export class OrderExecutor {
 
       this.dryRunPositions.set(positionId, position);
       this.logger.info(
-        `📊 [DRY RUN] Position opened: ${positionId} | Entry: ${entryPrice.toFixed(2)} | SL: ${signal.stopLoss.toFixed(2)} | TP: ${signal.takeProfit.toFixed(2)}`
+        `📊 [DRY RUN] Position opened: ${positionId} | Entry: ${entryPrice.toFixed(
+          2
+        )} | SL: ${signal.stopLoss.toFixed(
+          2
+        )} | TP: ${signal.takeProfit.toFixed(2)}`
       );
     }
   }
@@ -305,7 +378,11 @@ export class OrderExecutor {
    * Проверка открытых позиций в DRY RUN режиме
    * Вызывается при получении новых рыночных данных
    */
-  checkDryRunPositions(currentPrice: number, high?: number, low?: number): void {
+  checkDryRunPositions(
+    currentPrice: number,
+    high?: number,
+    low?: number
+  ): void {
     if (!Config.dryRun || this.dryRunPositions.size === 0) {
       return;
     }
@@ -349,17 +426,23 @@ export class OrderExecutor {
         // Рассчитываем PnL
         if (position.positionSide === "LONG") {
           pnl = (closePrice - position.entryPrice) * position.quantity;
-          pnlPercent = ((closePrice - position.entryPrice) / position.entryPrice) * 100;
+          pnlPercent =
+            ((closePrice - position.entryPrice) / position.entryPrice) * 100;
         } else {
           pnl = (position.entryPrice - closePrice) * position.quantity;
-          pnlPercent = ((position.entryPrice - closePrice) / position.entryPrice) * 100;
+          pnlPercent =
+            ((position.entryPrice - closePrice) / position.entryPrice) * 100;
         }
 
         const duration = Date.now() - position.entryTime;
         const durationMinutes = (duration / 1000 / 60).toFixed(1);
 
         this.logger.info(
-          `[DRY RUN] Position CLOSED: ${positionId} | ${closeReason} | Entry: ${position.entryPrice.toFixed(2)} | Close: ${closePrice.toFixed(2)} | PnL: ${pnl.toFixed(2)} USDT (${pnlPercent > 0 ? "+" : ""}${pnlPercent.toFixed(2)}%) | Duration: ${durationMinutes} min`
+          `[DRY RUN] Position CLOSED: ${positionId} | ${closeReason} | Entry: ${position.entryPrice.toFixed(
+            2
+          )} | Close: ${closePrice.toFixed(2)} | PnL: ${pnl.toFixed(2)} USDT (${
+            pnlPercent > 0 ? "+" : ""
+          }${pnlPercent.toFixed(2)}%) | Duration: ${durationMinutes} min`
         );
 
         // Обновляем дневной PnL в RiskManager

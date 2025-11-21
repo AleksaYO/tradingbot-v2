@@ -65,7 +65,16 @@ export class DataFeed extends EventEmitter {
         this.emit("marketData", data);
       },
       onError: (error: Error) => {
-        this.logger.error(`DataFeed error: ${error.message}`);
+        const errorMessage = error.message || "Unknown error";
+        // Улучшенная обработка ошибок таймаута
+        if (errorMessage.includes("timeout") || errorMessage.includes("ETIMEDOUT")) {
+          this.logger.error(
+            `DataFeed connection timeout: ${errorMessage} | ` +
+            `Network connectivity issue detected. Reconnection will be attempted automatically.`
+          );
+        } else {
+          this.logger.error(`DataFeed error: ${errorMessage}`);
+        }
         this.emit("error", error);
       },
       onReconnect: () => {
