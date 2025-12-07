@@ -52,19 +52,21 @@ async function main(): Promise<void> {
           "Please configure real API keys in .env file before running in LIVE mode!"
         );
       }
-      
+
       // Проверка формата API ключа (должен быть не пустым и не слишком коротким)
       if (Config.apiKey.length < 20 || Config.apiSecret.length < 20) {
         logger.warn(
           "⚠️  WARNING: API key or secret seems too short. Please verify your API keys are correct."
         );
       }
-      
+
       logger.warn("🚨🚨🚨 LIVE MODE - Real trades will be executed! 🚨🚨🚨");
       logger.warn("⚠️  Make sure you understand the risks!");
       logger.warn("⚠️  IMPORTANT: Ensure your API key has:");
       logger.warn("   - 'Enable Futures' permission enabled");
-      logger.warn("   - Your IP address whitelisted (or IP restriction disabled)");
+      logger.warn(
+        "   - Your IP address whitelisted (or IP restriction disabled)"
+      );
       logger.warn("   - Created as 'Futures API' (not Spot API)");
       logger.warn("⚠️  Starting in 3 seconds... Press Ctrl+C to cancel");
       await new Promise((resolve) => setTimeout(resolve, 3000));
@@ -170,11 +172,20 @@ async function handleMarketData(
       logger.debug("Invalid data received (not an object)");
       return; // Пропускаем некорректные данные
     }
-    
+
     // Логируем тип данных для диагностики
-    const dataType = "isClosed" in data ? "kline" : "price" in data ? "aggTrade" : "bids" in data ? "depth" : "unknown";
+    const dataType =
+      "isClosed" in data
+        ? "kline"
+        : "price" in data
+        ? "aggTrade"
+        : "bids" in data
+        ? "depth"
+        : "unknown";
     if (dataType === "kline") {
-      logger.debug(`Received ${dataType} data: isClosed=${(data as any).isClosed}`);
+      logger.debug(
+        `Received ${dataType} data: isClosed=${(data as any).isClosed}`
+      );
     }
 
     // Проверяем открытые позиции в DRY RUN режиме при получении новых данных
@@ -202,34 +213,54 @@ async function handleMarketData(
         const statsBefore = executor.getDryRunStats();
         executor.checkDryRunPositions(currentPrice, high, low);
         const statsAfter = executor.getDryRunStats();
-        
+
         // Логируем статус позиций при изменении количества
         if (statsAfter.openPositions !== statsBefore.openPositions) {
           if (statsAfter.openPositions > 0) {
-            const positions = statsAfter.positions.map(p => {
-              const pnl = p.positionSide === "LONG" 
-                ? (currentPrice - p.entryPrice) * p.quantity
-                : (p.entryPrice - currentPrice) * p.quantity;
-              const pnlPercent = p.positionSide === "LONG"
-                ? ((currentPrice - p.entryPrice) / p.entryPrice) * 100
-                : ((p.entryPrice - currentPrice) / p.entryPrice) * 100;
-              return `${p.positionSide} @ ${p.entryPrice.toFixed(2)} (PnL: ${pnl > 0 ? "+" : ""}${pnl.toFixed(2)} USDT, ${pnlPercent > 0 ? "+" : ""}${pnlPercent.toFixed(2)}%)`;
-            }).join(" | ");
+            const positions = statsAfter.positions
+              .map((p) => {
+                const pnl =
+                  p.positionSide === "LONG"
+                    ? (currentPrice - p.entryPrice) * p.quantity
+                    : (p.entryPrice - currentPrice) * p.quantity;
+                const pnlPercent =
+                  p.positionSide === "LONG"
+                    ? ((currentPrice - p.entryPrice) / p.entryPrice) * 100
+                    : ((p.entryPrice - currentPrice) / p.entryPrice) * 100;
+                return `${p.positionSide} @ ${p.entryPrice.toFixed(2)} (PnL: ${
+                  pnl > 0 ? "+" : ""
+                }${pnl.toFixed(2)} USDT, ${
+                  pnlPercent > 0 ? "+" : ""
+                }${pnlPercent.toFixed(2)}%)`;
+              })
+              .join(" | ");
             logger.info(
-              `[DRY RUN] Open positions: ${statsAfter.openPositions} | ${positions} | Current price: ${currentPrice.toFixed(2)}`
+              `[DRY RUN] Open positions: ${
+                statsAfter.openPositions
+              } | ${positions} | Current price: ${currentPrice.toFixed(2)}`
             );
           } else {
             logger.info(`[DRY RUN] All positions closed`);
           }
-        } else if (statsAfter.openPositions > 0 && Math.random() < 0.05) { // 5% шанс периодического логирования
-          const positions = statsAfter.positions.map(p => {
-            const pnl = p.positionSide === "LONG" 
-              ? (currentPrice - p.entryPrice) * p.quantity
-              : (p.entryPrice - currentPrice) * p.quantity;
-            return `${p.positionSide} @ ${p.entryPrice.toFixed(2)} (PnL: ${pnl > 0 ? "+" : ""}${pnl.toFixed(2)} USDT)`;
-          }).join(" | ");
+        } else if (statsAfter.openPositions > 0 && Math.random() < 0.05) {
+          // 5% шанс периодического логирования
+          const positions = statsAfter.positions
+            .map((p) => {
+              const pnl =
+                p.positionSide === "LONG"
+                  ? (currentPrice - p.entryPrice) * p.quantity
+                  : (p.entryPrice - currentPrice) * p.quantity;
+              return `${p.positionSide} @ ${p.entryPrice.toFixed(2)} (PnL: ${
+                pnl > 0 ? "+" : ""
+              }${pnl.toFixed(2)} USDT)`;
+            })
+            .join(" | ");
           logger.debug(
-            `[DRY RUN] Tracking ${statsAfter.openPositions} position(s): ${positions} | Current price: ${currentPrice.toFixed(2)}`
+            `[DRY RUN] Tracking ${
+              statsAfter.openPositions
+            } position(s): ${positions} | Current price: ${currentPrice.toFixed(
+              2
+            )}`
           );
         }
       }
@@ -242,10 +273,13 @@ async function handleMarketData(
       if (klineData.isClosed) {
         // Логируем только каждую 10-ю свечу или при генерации сигнала
         // (логирование при сигнале будет ниже)
-        if (Math.random() < 0.1) { // 10% шанс
+        if (Math.random() < 0.1) {
+          // 10% шанс
           logger.debug(
-            `📊 Processing closed candle: ${klineData.close.toFixed(2)} USDT | ` +
-            `Time: ${new Date(klineData.closeTime).toLocaleTimeString()}`
+            `📊 Processing closed candle: ${klineData.close.toFixed(
+              2
+            )} USDT | ` +
+              `Time: ${new Date(klineData.closeTime).toLocaleTimeString()}`
           );
         }
       } else {
@@ -267,7 +301,8 @@ async function handleMarketData(
     const signal = strategy.process(data);
     if (!signal) {
       // Логируем только периодически, чтобы не засорять логи
-      if (Math.random() < 0.05) { // 5% шанс
+      if (Math.random() < 0.05) {
+        // 5% шанс
         logger.debug("No signal generated by strategy (this is normal)");
       }
       return; // Нет сигнала - это нормально
@@ -303,14 +338,18 @@ async function handleMarketData(
     await executor.execute(executorSignal);
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    
+
     // Не логируем ошибки, которые уже обработаны в OrderExecutor
     // (например, ошибки подписи или API ключей)
-    if (errorMessage.includes("Signature") || errorMessage.includes("API key") || errorMessage.includes("permissions")) {
+    if (
+      errorMessage.includes("Signature") ||
+      errorMessage.includes("API key") ||
+      errorMessage.includes("permissions")
+    ) {
       // Эти ошибки уже залогированы в OrderExecutor с детальной информацией
       return;
     }
-    
+
     logger.error(`Error processing market data: ${errorMessage}`, {
       error: error instanceof Error ? error.stack : String(error),
     });

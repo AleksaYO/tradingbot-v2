@@ -205,3 +205,195 @@ export function toFVGType(fvg: FVGPoint): FVG {
   };
 }
 
+/**
+ * УЛУЧШЕНИЕ: Фильтрация ложных FVG
+ * 
+ * Ложные FVG - это маленькие разрывы, которые быстро заполняются или не имеют значения.
+ * 
+ * @param fvgs - массив FVG
+ * @param candles - массив свечей
+ * @param minSizePercent - минимальный размер FVG в процентах от средней свечи
+ * @returns отфильтрованные FVG
+ */
+export function filterFalseFVG(
+  fvgs: FVGPoint[],
+  candles: KlineData[],
+  minSizePercent: number = 0.3
+): FVGPoint[] {
+  if (candles.length < 20) {
+    return fvgs;
+  }
+
+  // Рассчитываем средний размер свечи
+  const avgCandleSize = candles
+    .slice(-50)
+    .reduce((sum, c) => sum + (c.high - c.low), 0) / Math.min(50, candles.length);
+
+  return fvgs.filter((fvg) => {
+    const fvgSize = Math.abs(fvg.start - fvg.end);
+    const sizeRatio = fvgSize / avgCandleSize;
+
+    // Фильтруем слишком маленькие FVG
+    return sizeRatio >= minSizePercent;
+  });
+}
+
+/**
+ * УЛУЧШЕНИЕ: Расширение FVG (extension)
+ * 
+ * Расширяет FVG для учета возможных зон возврата цены.
+ * 
+ * @param fvg - FVG для расширения
+ * @param extensionPercent - процент расширения (по умолчанию 20%)
+ * @returns расширенный FVG
+ */
+export function extendFVG(
+  fvg: FVGPoint,
+  extensionPercent: number = 20
+): FVGPoint {
+  const fvgSize = Math.abs(fvg.start - fvg.end);
+  const extension = fvgSize * (extensionPercent / 100);
+
+  if (fvg.type === "bullish") {
+    // Расширяем вверх и вниз
+    return {
+      ...fvg,
+      start: fvg.start + extension, // Расширяем верхнюю границу
+      end: fvg.end - extension, // Расширяем нижнюю границу
+    };
+  } else {
+    // Расширяем вверх и вниз
+    return {
+      ...fvg,
+      start: fvg.start - extension, // Расширяем верхнюю границу
+      end: fvg.end + extension, // Расширяем нижнюю границу
+    };
+  }
+}
+
+/**
+ * УЛУЧШЕНИЕ: Проверка качества FVG
+ * 
+ * Оценивает качество FVG на основе размера, контекста и объема.
+ * 
+ * @param fvg - FVG для проверки
+ * @param candles - массив свечей
+ * @returns оценка качества FVG (0-1)
+ */
+export function evaluateFVGQuality(
+  fvg: FVGPoint,
+  candles: KlineData[]
+): number {
+  let quality = 0.5; // Базовая оценка
+
+  // 1. Размер FVG
+  const fvgSize = Math.abs(fvg.start - fvg.end);
+  const avgCandleSize = candles
+    .slice(-20)
+    .reduce((sum, c) => sum + (c.high - c.low), 0) / 20;
+  const sizeRatio = fvgSize / avgCandleSize;
+
+  if (sizeRatio >= 0.5 && sizeRatio <= 2.0) {
+    quality += 0.2; // Оптимальный размер
+  } else if (sizeRatio > 2.0) {
+    quality += 0.1; // Слишком большой, но все еще валиден
+  }
+
+  // 2. Объем при формировании FVG
+  const fvgCandle = fvg.candles.c2; // Средняя свеча
+  const avgVolume = candles
+    .slice(-20)
+    .reduce((sum, c) => sum + c.volume, 0) / 20;
+  const volumeRatio = fvgCandle.volume / avgVolume;
+
+  if (volumeRatio > 1.5) {
+    quality += 0.2; // Высокий объем
+  } else if (volumeRatio > 1.0) {
+    quality += 0.1; // Средний объем
+  }
+
+  // 3. Контекст (насколько четкий разрыв)
+  const c1 = fvg.candles.c1;
+  const c3 = fvg.candles.c3;
+
+  if (fvg.type === "bullish") {
+    const gapSize = c3.low - c1.high;
+    const gapRatio = gapSize / avgCandleSize;
+    if (gapRatio > 0.3) {
+      quality += 0.1; // Четкий разрыв
+    }
+  } else {
+    const gapSize = c1.low - c3.high;
+    const gapRatio = gapSize / avgCandleSize;
+    if (gapRatio > 0.3) {
+      quality += 0.1; // Четкий разрыв
+    }
+  }
+
+  return Math.min(quality, 1.0);
+}
+
+/**
+ * УЛУЧШЕНИЕ: Улучшенный поиск FVG с фильтрацией и оценкой качества
+ * 
+ * @param candles - массив свечей
+ * @param minQuality - минимальное качество FVG (0-1)
+ * @param filterFalse - фильтровать ли ложные FVG
+ * @returns массив качественных FVG
+ */
+export function findFVGEnhanced(
+  candles: KlineData[],
+  minQuality: number = 0.5,
+  filterFalse: boolean = true
+): FVGPoint[] {
+  // Сначала находим базовые FVG
+  let fvgs = findFVG(candles);
+
+  // Фильтруем ложные FVG
+  if (filterFalse) {
+    fvgs = filterFalseFVG(fvgs, candles, 0.3);
+  }
+
+  // Фильтруем по качеству
+  return fvgs.filter((fvg) => {
+    const quality = evaluateFVGQuality(fvg, candles);
+    return quality >= minQuality;
+  });
+}
+
+/**
+ * УЛУЧШЕНИЕ: Получение расширенных FVG
+ * 
+ * Возвращает FVG с расширением для учета зон возврата.
+ * 
+ * @param fvgs - массив FVG
+ * @param extensionPercent - процент расширения
+ * @returns массив расширенных FVG
+ */
+export function getExtendedFVGs(
+  fvgs: FVGPoint[],
+  extensionPercent: number = 20
+): FVGPoint[] {
+  return fvgs.map((fvg) => extendFVG(fvg, extensionPercent));
+}
+
+/**
+ * УЛУЧШЕНИЕ: Проверка, находится ли цена в расширенном FVG
+ * 
+ * @param fvg - FVG (может быть расширенным)
+ * @param price - цена для проверки
+ * @param extensionPercent - процент расширения, если FVG не был расширен
+ * @returns true если цена в FVG
+ */
+export function isPriceInExtendedFVG(
+  fvg: FVGPoint,
+  price: number,
+  extensionPercent: number = 20
+): boolean {
+  const extended = extendFVG(fvg, extensionPercent);
+  const fvgMin = Math.min(extended.start, extended.end);
+  const fvgMax = Math.max(extended.start, extended.end);
+
+  return price >= fvgMin && price <= fvgMax;
+}
+

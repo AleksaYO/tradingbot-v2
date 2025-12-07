@@ -110,8 +110,15 @@ export class OrderExecutor {
    * Убирает лишние нули и ограничивает точность
    */
   private formatQuantity(quantity: number): string {
-    // Убираем лишние нули, но сохраняем до 8 знаков после запятой
-    return quantity.toString().replace(/\.?0+$/, "");
+    // Binance требует точный формат без лишних нулей
+    // Но для очень маленьких чисел (0.002) нужно сохранять формат
+    const str = quantity.toString();
+    // Если число целое, возвращаем как есть
+    if (!str.includes('.')) {
+      return str;
+    }
+    // Убираем лишние нули в конце, но сохраняем минимум нужные знаки
+    return str.replace(/\.?0+$/, "");
   }
 
   /**

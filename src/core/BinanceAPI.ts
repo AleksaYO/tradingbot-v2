@@ -175,16 +175,31 @@ export class BinanceAPI {
 
   /**
    * Создание query string с подписью
+   * 
+   * Важно: параметры должны быть отсортированы по алфавиту для правильной подписи
    */
   private createSignedQuery(params: Record<string, any>): string {
     const timestamp = Date.now();
+    const recvWindow = 5000; // Окно приема запросов (5 секунд)
 
-    // Создаем query string вручную для совместимости
+    // Добавляем обязательные параметры
+    const allParams: Record<string, any> = {
+      ...params,
+      recvWindow,
+      timestamp,
+    };
+
+    // Сортируем параметры по алфавиту (требование Binance API)
+    const sortedKeys = Object.keys(allParams).sort();
+    
+    // Создаем query string из отсортированных параметров
     const queryParts: string[] = [];
-    for (const [key, value] of Object.entries(params)) {
-      queryParts.push(`${key}=${value}`);
+    for (const key of sortedKeys) {
+      const value = allParams[key];
+      if (value !== undefined && value !== null) {
+        queryParts.push(`${key}=${value}`);
+      }
     }
-    queryParts.push(`timestamp=${timestamp}`);
 
     const queryString = queryParts.join("&");
     const signature = this.generateSignature(queryString);

@@ -196,3 +196,231 @@ export function determineMarketStructure(swings: SwingPoint[]): string {
   return "RANGE";
 }
 
+/**
+ * УЛУЧШЕНИЕ: Анализ объема для swing точек
+ * 
+ * Определяет силу swing точки на основе объема.
+ * Сильные swing точки обычно имеют высокий объем.
+ * 
+ * @param swing - swing точка
+ * @param candles - массив свечей
+ * @param lookback - количество свечей для расчета среднего объема
+ * @returns сила swing точки на основе объема (0-1)
+ */
+export function getSwingVolumeStrength(
+  swing: SwingPoint,
+  candles: KlineData[],
+  lookback: number = 20
+): number {
+  const swingVolume = swing.kline.volume;
+  const startIndex = Math.max(0, swing.index - lookback);
+  const endIndex = Math.min(candles.length, swing.index + lookback);
+  const avgVolume = candles
+    .slice(startIndex, endIndex)
+    .reduce((sum, c) => sum + c.volume, 0) / (endIndex - startIndex);
+
+  if (avgVolume === 0) {
+    return 0.5; // Базовая оценка, если нет данных
+  }
+
+  const volumeRatio = swingVolume / avgVolume;
+  // Нормализуем: 1x = 0.5, 2x = 0.75, 3x+ = 1.0
+  return Math.min(0.5 + (volumeRatio - 1) * 0.25, 1.0);
+}
+
+/**
+ * УЛУЧШЕНИЕ: Анализ фитилей (wick) для определения силы swing
+ * 
+ * Большие фитили на swing точках указывают на сильное сопротивление/поддержку.
+ * 
+ * @param swing - swing точка
+ * @returns сила swing на основе фитилей (0-1)
+ */
+export function getSwingWickStrength(swing: SwingPoint): number {
+  const candle = swing.kline;
+  const bodySize = Math.abs(candle.close - candle.open);
+  const candleRange = candle.high - candle.low;
+
+  if (candleRange === 0) {
+    return 0.5;
+  }
+
+  if (swing.type === "high") {
+    // Для swing high важен верхний фитиль
+    const upperWick = candle.high - Math.max(candle.open, candle.close);
+    const wickRatio = upperWick / candleRange;
+    // Большой верхний фитиль = сильный swing high
+    return Math.min(wickRatio * 2, 1.0);
+  } else {
+    // Для swing low важен нижний фитиль
+    const lowerWick = Math.min(candle.open, candle.close) - candle.low;
+    const wickRatio = lowerWick / candleRange;
+    // Большой нижний фитиль = сильный swing low
+    return Math.min(wickRatio * 2, 1.0);
+  }
+}
+
+/**
+ * УЛУЧШЕНИЕ: Адаптивный lookback на основе волатильности
+ * 
+ * В высоковолатильном рынке нужен больший lookback для фильтрации шума.
+ * 
+ * @param candles - массив свечей
+ * @param baseLookback - базовый lookback (по умолчанию 3)
+ * @returns адаптивный lookback
+ */
+export function getAdaptiveLookback(
+  candles: KlineData[],
+  baseLookback: number = 3
+): number {
+  if (candles.length < 20) {
+    return baseLookback;
+  }
+
+  // Рассчитываем среднюю волатильность (ATR-like)
+  const recentCandles = candles.slice(-20);
+  const volatilities = recentCandles.map((c) => c.high - c.low);
+  const avgVolatility = volatilities.reduce((sum, v) => sum + v, 0) / volatilities.length;
+  const overallAvgVolatility = candles
+    .slice(-100)
+    .map((c) => c.high - c.low)
+    .reduce((sum, v) => sum + v, 0) / Math.min(100, candles.length);
+
+  // Если текущая волатильность выше средней, увеличиваем lookback
+  const volatilityRatio = avgVolatility / overallAvgVolatility;
+  if (volatilityRatio > 1.5) {
+    return baseLookback + 1; // Высокая волатильность
+  } else if (volatilityRatio < 0.7) {
+    return Math.max(2, baseLookback - 1); // Низкая волатильность
+  }
+
+  return baseLookback;
+}
+
+/**
+ * УЛУЧШЕНИЕ: Улучшенный поиск swing точек с анализом объема и фитилей
+ * 
+ * @param candles - массив свечей
+ * @param lookback - количество свечей для проверки (опционально, будет адаптивным)
+ * @param minVolumeStrength - минимальная сила объема (0-1)
+ * @param minWickStrength - минимальная сила фитиля (0-1)
+ * @returns массив swing точек с улучшенной фильтрацией
+ */
+export function findSwingsEnhanced(
+  candles: KlineData[],
+  lookback?: number,
+  minVolumeStrength: number = 0.3,
+  minWickStrength: number = 0.2
+): SwingPoint[] {
+  // Используем адаптивный lookback, если не указан
+  const adaptiveLookback = lookback || getAdaptiveLookback(candles, 3);
+
+  // Сначала находим базовые swing точки
+  const baseSwings = findSwings(candles, adaptiveLookback);
+
+  // Фильтруем по объему и фитилям
+  return baseSwings.filter((swing) => {
+    const volumeStrength = getSwingVolumeStrength(swing, candles);
+    const wickStrength = getSwingWickStrength(swing);
+
+    return volumeStrength >= minVolumeStrength || wickStrength >= minWickStrength;
+  });
+}
+
+/**
+ * УЛУЧШЕНИЕ: Обновление high/low для анализа ликвидности
+ * 
+ * Отслеживает актуальные максимумы и минимумы для определения уровней ликвидности.
+ * 
+ * @param candles - массив свечей
+ * @param lookback - количество свечей для анализа
+ * @returns объект с текущими high/low и их индексами
+ */
+export function updateLiquidityHighLow(
+  candles: KlineData[],
+  lookback: number = 20
+): {
+  currentHigh: number;
+  currentLow: number;
+  highIndex: number;
+  lowIndex: number;
+} {
+  if (candles.length === 0) {
+    return {
+      currentHigh: 0,
+      currentLow: 0,
+      highIndex: -1,
+      lowIndex: -1,
+    };
+  }
+
+  const recentCandles = candles.slice(-lookback);
+  let currentHigh = recentCandles[0].high;
+  let currentLow = recentCandles[0].low;
+  let highIndex = candles.length - lookback;
+  let lowIndex = candles.length - lookback;
+
+  for (let i = 0; i < recentCandles.length; i++) {
+    const candle = recentCandles[i];
+    const actualIndex = candles.length - lookback + i;
+
+    if (candle.high > currentHigh) {
+      currentHigh = candle.high;
+      highIndex = actualIndex;
+    }
+
+    if (candle.low < currentLow) {
+      currentLow = candle.low;
+      lowIndex = actualIndex;
+    }
+  }
+
+  return {
+    currentHigh,
+    currentLow,
+    highIndex,
+    lowIndex,
+  };
+}
+
+/**
+ * УЛУЧШЕНИЕ: Комплексная оценка силы swing точки
+ * 
+ * Объединяет анализ объема, фитилей и ценового движения.
+ * 
+ * @param swing - swing точка
+ * @param candles - массив свечей
+ * @returns общая сила swing точки (0-1)
+ */
+export function getSwingOverallStrength(
+  swing: SwingPoint,
+  candles: KlineData[]
+): number {
+  const volumeStrength = getSwingVolumeStrength(swing, candles);
+  const wickStrength = getSwingWickStrength(swing);
+
+  // Взвешенная оценка: объем 40%, фитиль 40%, базовая сила 20%
+  const overallStrength = volumeStrength * 0.4 + wickStrength * 0.4 + 0.2;
+
+  return Math.min(overallStrength, 1.0);
+}
+
+/**
+ * УЛУЧШЕНИЕ: Фильтрация swing точек по комплексной силе
+ * 
+ * @param swings - массив swing точек
+ * @param candles - массив свечей
+ * @param minStrength - минимальная общая сила (0-1)
+ * @returns отфильтрованные swing точки
+ */
+export function filterSwingsByOverallStrength(
+  swings: SwingPoint[],
+  candles: KlineData[],
+  minStrength: number = 0.5
+): SwingPoint[] {
+  return swings.filter((swing) => {
+    const strength = getSwingOverallStrength(swing, candles);
+    return strength >= minStrength;
+  });
+}
+

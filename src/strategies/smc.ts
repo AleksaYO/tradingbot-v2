@@ -19,19 +19,59 @@
  */
 
 import { KlineData, Signal } from "../types";
-import { findSwings, SwingPoint } from "../utils/swing";
-import { findFVG, FVGPoint, getNearestUnfilledFVG } from "../utils/fvg";
+import { 
+  findSwings, 
+  SwingPoint,
+  findSwingsEnhanced,
+  getSwingOverallStrength,
+  updateLiquidityHighLow,
+} from "../utils/swing";
+import { 
+  findFVG, 
+  FVGPoint, 
+  getNearestUnfilledFVG,
+  findFVGEnhanced,
+  evaluateFVGQuality,
+} from "../utils/fvg";
 import {
   detectStructure,
   detectCHoCH,
   StructureChange,
+  detectStructureEnhanced,
+  validateBOSQuality,
+  isBOSImpulseStrong,
+  hasLiquiditySweepBeforeBOS,
 } from "../utils/structure";
 import {
   findOrderBlock,
   OrderBlock,
   isPriceInOrderBlock,
   getValidOrderBlocks,
+  findOrderBlockEnhanced,
+  validateOrderBlockQuality,
+  refineOrderBlock,
+  checkOrderBlockRetest,
+  getOrderBlockVolumeStrength,
+  getOrderBlockWickStrength,
 } from "../utils/orderBlock";
+import {
+  updateLiquidityLevels,
+  detectLiquiditySweeps,
+  getNearestLiquidityLevels,
+  evaluateSweepQuality,
+  LiquidityLevel,
+} from "../utils/liquidity";
+import {
+  isImpulseStrong,
+  isCorrectionWeak,
+  analyzeMovementQuality,
+} from "../utils/impulse";
+import {
+  confirmSignal,
+  confirmWithCandle,
+  detectRetest,
+  ConfirmationResult,
+} from "../utils/confirmation";
 
 export interface SMCSignal {
   side: "BUY" | "SELL";
@@ -59,68 +99,168 @@ export interface SMCSignal {
  * @param lastPrice - текущая цена
  * @returns торговый сигнал или null
  */
+/**
+ * УЛУЧШЕНИЕ: Основная функция стратегии SMC с улучшенной логикой
+ * 
+ * Включает все улучшения:
+ * - Улучшенная детекция swing точек
+ * - Фильтры силы импульса и слабости коррекции
+ * - Анализ ликвидности и sweep'ов
+ * - Подтверждение свечой
+ * - Расширенный confidence score
+ */
 export function smcStrategy(
   candles: KlineData[],
   lastPrice: number,
   logger?: any // Опциональный logger для диагностики
 ): SMCSignal | null {
-  if (candles.length < 10) {
-    if (logger) logger.debug(`SMC: Not enough candles: ${candles.length} < 10`);
-    return null; // Недостаточно данных
+  if (candles.length < 20) {
+    if (logger) logger.debug(`SMC: Not enough candles: ${candles.length} < 20`);
+    return null; // Недостаточно данных (увеличено требование)
   }
 
-  // 1. Находим Swing точки
-  const swings = findSwings(candles, 3);
+  // 1. УЛУЧШЕНИЕ: Находим Swing точки с улучшенной фильтрацией
+  const swings = findSwingsEnhanced(candles, undefined, 0.3, 0.2);
   if (swings.length < 4) {
     if (logger) logger.debug(`SMC: Not enough swings: ${swings.length} < 4`);
     return null; // Недостаточно Swing точек
   }
-  if (logger) logger.debug(`SMC: Found ${swings.length} swing points`);
+  if (logger) logger.debug(`SMC: Found ${swings.length} swing points (enhanced)`);
 
-  // 2. Определяем структуру (BOS)
-  const structure = detectStructure(swings);
+  // 2. УЛУЧШЕНИЕ: Определяем структуру (BOS) с улучшенной детекцией
+  // Используем улучшенную детекцию, но не требуем обязательный sweep (чтобы не пропускать сигналы)
+  const structure = detectStructureEnhanced(swings, candles, false, false);
   if (!structure) {
     if (logger) logger.debug(`SMC: No BOS detected`);
     return null; // Нет BOS
   }
   if (logger) logger.info(`SMC: BOS detected: ${structure.direction} @ ${structure.price.toFixed(2)}`);
 
-  // 3. Находим FVG (для дополнительного анализа)
-  const fvgs = findFVG(candles);
-
-  // 4. Находим Order Block, который вызвал BOS
-  const orderBlock = findOrderBlock(candles, structure);
-  if (!orderBlock) {
-    if (logger) logger.debug(`SMC: Order Block not found for BOS`);
-    return null; // Order Block не найден
+  // 3. УЛУЧШЕНИЕ: Находим FVG с улучшенной фильтрацией
+  const fvgs = findFVGEnhanced(candles, 0.5, true);
+  if (logger && fvgs.length > 0) {
+    const unfilledFvgs = fvgs.filter(fvg => !fvg.filled);
+    logger.debug(`SMC: Found ${fvgs.length} FVGs (${unfilledFvgs.length} unfilled)`);
   }
-  if (logger) logger.info(`SMC: Order Block found: ${orderBlock.type} @ ${orderBlock.low.toFixed(2)}-${orderBlock.high.toFixed(2)}`);
+
+  // 4. УЛУЧШЕНИЕ: Находим Order Block с улучшенной логикой
+  const orderBlock = findOrderBlockEnhanced(candles, structure, 0.5);
+  if (!orderBlock) {
+    if (logger) logger.debug(`SMC: Order Block not found or quality too low`);
+    return null; // Order Block не найден или качество недостаточно
+  }
+
+  // УЛУЧШЕНИЕ: Применяем mitigation для уточнения OB
+  const refinedOB = refineOrderBlock(orderBlock, candles, structure.index);
+  if (logger) logger.info(`SMC: Order Block found: ${refinedOB.type} @ ${refinedOB.low.toFixed(2)}-${refinedOB.high.toFixed(2)}`);
 
   // 5. Проверяем, что Order Block еще валиден (не пробит)
-  const validOBs = getValidOrderBlocks([orderBlock], lastPrice);
+  const validOBs = getValidOrderBlocks([refinedOB], lastPrice);
   if (validOBs.length === 0) {
-    if (logger) logger.debug(`SMC: Order Block broken/invalid. Price: ${lastPrice.toFixed(2)}, OB: ${orderBlock.low.toFixed(2)}-${orderBlock.high.toFixed(2)}`);
+    if (logger) logger.debug(`SMC: Order Block broken/invalid. Price: ${lastPrice.toFixed(2)}, OB: ${refinedOB.low.toFixed(2)}-${refinedOB.high.toFixed(2)}`);
     return null; // Order Block пробит
   }
 
-  // 6. Правило входа: цена должна быть в Order Block
-  const priceInOB = isPriceInOrderBlock(orderBlock, lastPrice);
-  if (logger) logger.info(`SMC: Price ${lastPrice.toFixed(2)} in Order Block: ${priceInOB} (OB: ${orderBlock.low.toFixed(2)}-${orderBlock.high.toFixed(2)})`);
+  // 6. УЛУЧШЕНИЕ: Анализ ликвидности
+  let liquidityLevels: LiquidityLevel[] = [];
+  try {
+    const { currentHigh, currentLow, highIndex, lowIndex } = updateLiquidityHighLow(candles, 20);
+    if (highIndex >= 0) {
+      liquidityLevels.push({
+        price: currentHigh,
+        type: "high",
+        index: highIndex,
+        timestamp: candles[highIndex].closeTime,
+        swept: false,
+      });
+    }
+    if (lowIndex >= 0) {
+      liquidityLevels.push({
+        price: currentLow,
+        type: "low",
+        index: lowIndex,
+        timestamp: candles[lowIndex].closeTime,
+        swept: false,
+      });
+    }
+    // Обновляем статус sweep'ов
+    detectLiquiditySweeps(liquidityLevels, candles, 3);
+    
+    // Логируем информацию о ликвидности
+    if (logger && liquidityLevels.length > 0) {
+      const sweptLevels = liquidityLevels.filter(l => l.swept);
+      logger.debug(`SMC: Found ${liquidityLevels.length} liquidity levels (${sweptLevels.length} swept)`);
+      if (sweptLevels.length > 0) {
+        logger.debug(`SMC: Swept levels: ${sweptLevels.map(l => `${l.type} @ ${l.price.toFixed(2)}`).join(", ")}`);
+      }
+    }
+  } catch (e) {
+    // Игнорируем ошибки анализа ликвидности
+    if (logger) logger.debug(`SMC: Liquidity analysis error: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // 7. УЛУЧШЕНИЕ: Правило входа с подтверждением
+  const priceInOB = isPriceInOrderBlock(refinedOB, lastPrice);
+  if (logger) logger.info(`SMC: Price ${lastPrice.toFixed(2)} in Order Block: ${priceInOB} (OB: ${refinedOB.low.toFixed(2)}-${refinedOB.high.toFixed(2)})`);
   
   if (structure.direction === "bullish") {
     // Bullish BOS: цена откатывается в Order Block
     if (priceInOB) {
+      // УЛУЧШЕНИЕ: Подтверждение сигнала
+      const confirmation = confirmSignal(
+        "BUY",
+        refinedOB,
+        structure,
+        candles,
+        true, // Требуем подтверждение свечой
+        false // Ретест не обязателен, но желателен
+      );
+
+      if (!confirmation.confirmed) {
+        if (logger) logger.info(`SMC: Signal not confirmed: ${confirmation.reason} (confidence: ${(confirmation.confidence * 100).toFixed(1)}%)`);
+        return null; // Сигнал не подтвержден
+      }
+
       // Находим ближайший FVG для дополнительной информации
       const nearestFVG = getNearestUnfilledFVG(fvgs, lastPrice, "bullish");
+      if (logger && nearestFVG) {
+        logger.info(`SMC: Nearest FVG: ${nearestFVG.type} @ ${nearestFVG.start.toFixed(2)}-${nearestFVG.end.toFixed(2)}`);
+      }
+
+      // УЛУЧШЕНИЕ: Используем расширенный confidence с учетом всех факторов
+      const confidence = calculateConfidence(
+        structure,
+        refinedOB,
+        fvgs,
+        swings,
+        candles,
+        liquidityLevels
+      );
+      
+      // Логируем детали confidence
+      if (logger) {
+        const hasSweep = hasLiquiditySweepBeforeBOS(structure, candles);
+        const impulseStrong = isImpulseStrong(candles, swings, structure.direction, 0.4);
+        const correctionWeak = isCorrectionWeak(candles, swings, structure.direction, 50);
+        const nearbyFVG = fvgs.find(
+          (fvg) =>
+            !fvg.filled &&
+            Math.abs((fvg.start + fvg.end) / 2 - (refinedOB.high + refinedOB.low) / 2) < (refinedOB.high - refinedOB.low) * 2
+        );
+        logger.info(`SMC: Analysis factors - Impulse: ${impulseStrong ? "strong" : "weak"}, Correction: ${correctionWeak ? "weak" : "strong"}, Sweep: ${hasSweep ? "yes" : "no"}, Nearby FVG: ${nearbyFVG ? "yes" : "no"}, Confidence: ${(confidence * 100).toFixed(1)}%`);
+      }
+
+      // УЛУЧШЕНИЕ: Учитываем подтверждение в confidence
+      const finalConfidence = Math.min(confidence + confirmation.confidence * 0.1, 1.0);
 
       return {
         side: "BUY",
-        entry: lastPrice,
-        stop: orderBlock.low, // Стоп ниже Order Block
-        ob: orderBlock,
+        entry: confirmation.entryPrice || lastPrice, // Используем цену из подтверждения
+        stop: refinedOB.low, // Стоп ниже Order Block
+        ob: refinedOB,
         structure: structure,
-        confidence: calculateConfidence(structure, orderBlock, fvgs, swings),
-        reason: `Bullish BOS detected. Price in Order Block. Entry: ${lastPrice.toFixed(2)}, Stop: ${orderBlock.low.toFixed(2)}`,
+        confidence: finalConfidence,
+        reason: `Bullish BOS detected. Price in Order Block. Entry: ${(confirmation.entryPrice || lastPrice).toFixed(2)}, Stop: ${refinedOB.low.toFixed(2)}. ${confirmation.reason}`,
         fvg: nearestFVG || undefined,
       };
     }
@@ -128,18 +268,62 @@ export function smcStrategy(
 
   if (structure.direction === "bearish") {
     // Bearish BOS: цена откатывается в Order Block
-    if (isPriceInOrderBlock(orderBlock, lastPrice)) {
+    if (isPriceInOrderBlock(refinedOB, lastPrice)) {
+      // УЛУЧШЕНИЕ: Подтверждение сигнала
+      const confirmation = confirmSignal(
+        "SELL",
+        refinedOB,
+        structure,
+        candles,
+        true, // Требуем подтверждение свечой
+        false // Ретест не обязателен, но желателен
+      );
+
+      if (!confirmation.confirmed) {
+        if (logger) logger.info(`SMC: Signal not confirmed: ${confirmation.reason} (confidence: ${(confirmation.confidence * 100).toFixed(1)}%)`);
+        return null; // Сигнал не подтвержден
+      }
+
       // Находим ближайший FVG для дополнительной информации
       const nearestFVG = getNearestUnfilledFVG(fvgs, lastPrice, "bearish");
+      if (logger && nearestFVG) {
+        logger.info(`SMC: Nearest FVG: ${nearestFVG.type} @ ${nearestFVG.start.toFixed(2)}-${nearestFVG.end.toFixed(2)}`);
+      }
+
+      // УЛУЧШЕНИЕ: Используем расширенный confidence с учетом всех факторов
+      const confidence = calculateConfidence(
+        structure,
+        refinedOB,
+        fvgs,
+        swings,
+        candles,
+        liquidityLevels
+      );
+      
+      // Логируем детали confidence
+      if (logger) {
+        const hasSweep = hasLiquiditySweepBeforeBOS(structure, candles);
+        const impulseStrong = isImpulseStrong(candles, swings, structure.direction, 0.4);
+        const correctionWeak = isCorrectionWeak(candles, swings, structure.direction, 50);
+        const nearbyFVG = fvgs.find(
+          (fvg) =>
+            !fvg.filled &&
+            Math.abs((fvg.start + fvg.end) / 2 - (refinedOB.high + refinedOB.low) / 2) < (refinedOB.high - refinedOB.low) * 2
+        );
+        logger.info(`SMC: Analysis factors - Impulse: ${impulseStrong ? "strong" : "weak"}, Correction: ${correctionWeak ? "weak" : "strong"}, Sweep: ${hasSweep ? "yes" : "no"}, Nearby FVG: ${nearbyFVG ? "yes" : "no"}, Confidence: ${(confidence * 100).toFixed(1)}%`);
+      }
+
+      // УЛУЧШЕНИЕ: Учитываем подтверждение в confidence
+      const finalConfidence = Math.min(confidence + confirmation.confidence * 0.1, 1.0);
 
       return {
         side: "SELL",
-        entry: lastPrice,
-        stop: orderBlock.high, // Стоп выше Order Block
-        ob: orderBlock,
+        entry: confirmation.entryPrice || lastPrice, // Используем цену из подтверждения
+        stop: refinedOB.high, // Стоп выше Order Block
+        ob: refinedOB,
         structure: structure,
-        confidence: calculateConfidence(structure, orderBlock, fvgs, swings),
-        reason: `Bearish BOS detected. Price in Order Block. Entry: ${lastPrice.toFixed(2)}, Stop: ${orderBlock.high.toFixed(2)}`,
+        confidence: finalConfidence,
+        reason: `Bearish BOS detected. Price in Order Block. Entry: ${(confirmation.entryPrice || lastPrice).toFixed(2)}, Stop: ${refinedOB.high.toFixed(2)}. ${confirmation.reason}`,
         fvg: nearestFVG || undefined,
       };
     }
@@ -149,72 +333,112 @@ export function smcStrategy(
 }
 
 /**
- * Расчет уверенности в сигнале (0-1)
+ * УЛУЧШЕНИЕ: Расширенный расчет уверенности в сигнале (0-1)
  * 
  * Факторы, влияющие на уверенность:
  * - Сила BOS (разница между swing точками)
  * - Размер Order Block
  * - Наличие FVG рядом
  * - Структура рынка
+ * - Сила импульса
+ * - Слабость коррекции
+ * - Анализ ликвидности
+ * - Sweep ликвидности
+ * - Качество Order Block
+ * - Качество FVG
  * 
  * @param structure - BOS структура
  * @param orderBlock - Order Block
  * @param fvgs - массив FVG
  * @param swings - массив Swing точек
+ * @param candles - массив свечей
+ * @param liquidityLevels - уровни ликвидности
  * @returns уверенность от 0 до 1
  */
 function calculateConfidence(
   structure: StructureChange,
   orderBlock: OrderBlock,
   fvgs: FVGPoint[],
-  swings: SwingPoint[]
+  swings: SwingPoint[],
+  candles: KlineData[],
+  liquidityLevels: LiquidityLevel[] = []
 ): number {
-  let confidence = 0.5; // Базовая уверенность
+  let confidence = 0.4; // Базовая уверенность (снижена, так как добавляем больше факторов)
 
-  // 1. Сила BOS (разница между swing точками)
-  const swingDiff = Math.abs(
-    structure.currentSwing.price - structure.previousSwing.price
+  // 1. Качество BOS (0.15)
+  const bosQuality = validateBOSQuality(structure, candles, swings);
+  confidence += bosQuality * 0.15;
+
+  // 2. Сила импульса (0.15)
+  const impulseStrong = isImpulseStrong(
+    candles,
+    swings,
+    structure.direction,
+    0.4
   );
-  const priceRange = Math.max(...swings.map((s) => s.price)) -
-    Math.min(...swings.map((s) => s.price));
-  const swingStrength = Math.min(swingDiff / priceRange, 1);
-  confidence += swingStrength * 0.2; // До +0.2
+  if (impulseStrong) {
+    confidence += 0.15;
+  }
 
-  // 2. Размер Order Block (меньше = лучше)
-  const obSize = orderBlock.high - orderBlock.low;
-  const avgCandleSize =
-    swings.reduce((sum, s) => sum + (s.kline.high - s.kline.low), 0) /
-    swings.length;
-  const obRatio = Math.min(obSize / avgCandleSize, 2);
-  confidence += (1 - obRatio / 2) * 0.15; // До +0.15
+  // 3. Слабость коррекции (0.1)
+  const correctionWeak = isCorrectionWeak(
+    candles,
+    swings,
+    structure.direction,
+    50
+  );
+  if (correctionWeak) {
+    confidence += 0.1;
+  }
 
-  // 3. Наличие FVG рядом с Order Block
+  // 4. Качество Order Block (0.15)
+  const obQuality = validateOrderBlockQuality(orderBlock, candles);
+  confidence += obQuality * 0.15;
+
+  // 5. Объем Order Block (0.1)
+  const obVolumeStrength = getOrderBlockVolumeStrength(orderBlock, candles);
+  confidence += obVolumeStrength * 0.1;
+
+  // 6. Фитили Order Block (0.05)
+  const obWickStrength = getOrderBlockWickStrength(orderBlock);
+  confidence += obWickStrength * 0.05;
+
+  // 7. Наличие FVG рядом с Order Block (0.1)
   const obCenter = (orderBlock.high + orderBlock.low) / 2;
   const nearbyFVG = fvgs.find(
     (fvg) =>
       !fvg.filled &&
-      Math.abs((fvg.start + fvg.end) / 2 - obCenter) < obSize * 2
+      Math.abs((fvg.start + fvg.end) / 2 - obCenter) < (orderBlock.high - orderBlock.low) * 2
   );
   if (nearbyFVG) {
-    confidence += 0.1; // +0.1 за наличие FVG
+    const fvgQuality = evaluateFVGQuality(nearbyFVG, candles);
+    confidence += fvgQuality * 0.1; // Учитываем качество FVG
   }
 
-  // 4. Структура рынка (тренд в направлении сигнала)
-  const isUptrend = swings
-    .filter((s) => s.type === "high")
-    .slice(-2)
-    .every((s, i, arr) => i === 0 || s.price > arr[i - 1].price);
-  const isDowntrend = swings
-    .filter((s) => s.type === "low")
-    .slice(-2)
-    .every((s, i, arr) => i === 0 || s.price < arr[i - 1].price);
+  // 8. Sweep ликвидности перед BOS (0.1)
+  if (hasLiquiditySweepBeforeBOS(structure, candles)) {
+    confidence += 0.1;
+  }
 
+  // 9. Анализ ликвидности (0.05)
+  const { nearestHigh, nearestLow } = getNearestLiquidityLevels(
+    liquidityLevels,
+    candles[candles.length - 1].close
+  );
   if (
-    (structure.direction === "bullish" && isUptrend) ||
-    (structure.direction === "bearish" && isDowntrend)
+    (structure.direction === "bullish" && nearestLow && !nearestLow.swept) ||
+    (structure.direction === "bearish" && nearestHigh && !nearestHigh.swept)
   ) {
-    confidence += 0.05; // +0.05 за совпадение с трендом
+    confidence += 0.05; // Есть непротестенный уровень ликвидности
   }
+
+  // 10. Качество движения (0.05)
+  const movementQuality = analyzeMovementQuality(
+    candles,
+    swings,
+    structure.direction
+  );
+  confidence += movementQuality * 0.05;
 
   return Math.min(confidence, 1.0); // Ограничиваем до 1.0
 }
@@ -352,7 +576,7 @@ export function getPotentialSignals(
       structure.direction === "bullish" ? orderBlock.low : orderBlock.high,
     ob: orderBlock,
     structure: structure,
-    confidence: calculateConfidence(structure, orderBlock, fvgs, swings),
+    confidence: calculateConfidence(structure, orderBlock, fvgs, swings, candles),
     reason: `${structure.direction.toUpperCase()} BOS detected. Order Block: ${orderBlock.low.toFixed(2)} - ${orderBlock.high.toFixed(2)}`,
     fvg: nearestFVG || undefined,
   });
